@@ -106,7 +106,7 @@ def build_record(event: dict, ctx: dict, cwd) -> dict:
     if tool in EDIT_TOOLS:
         rec["files"] = _paths_of(tin, ctx["root"], cwd)
     if tool in SHELL_TOOLS and command is not None:
-        c = redact(command).replace("\n", " ⏎ ")
+        c = redact(command[: COMMAND_MAX * 2]).replace("\n", " ⏎ ")
         rec["command"] = c if len(c) <= COMMAND_MAX else c[:COMMAND_MAX] + "…"
     if event.get("source") in ("startup", "resume", "clear", "compact"):
         rec["source"] = event["source"]

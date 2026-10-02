@@ -88,3 +88,10 @@ def test_redact_is_linear_on_pathological_input():
 def test_redact_still_catches_secrets_after_prefix_bound():
     assert "hunter2" not in redact("MY_DB_PASSWORD=hunter2")
     assert "abc" not in redact("some.long-prefix_api_key: abc")
+
+
+def test_author_fields_are_not_redacted_but_auth_secrets_are():
+    assert redact("Author: Jane Doe <jane@example.com>") == "Author: Jane Doe <jane@example.com>"
+    assert redact("AuthorDate: Fri Oct 2 2026") == "AuthorDate: Fri Oct 2 2026"
+    assert "abc123" not in redact("auth=abc123")
+    assert "xyz789" not in redact("AUTH_TOKEN=xyz789")

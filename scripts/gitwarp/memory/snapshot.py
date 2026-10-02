@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Optional
 
 from ..core import git
@@ -10,11 +11,25 @@ from ..core.paths import classify_path
 from ..core.redact import redact
 
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_DROP_CATEGORIES = frozenset({"Cf", "Cc", "Cs", "Co", "Cn"})   # format (zero-width, bidi, tags U+E00xx), control, surrogate, private, unassigned
+_PRE_CUT = 1000   # cheap bound applied BEFORE redaction (redaction can only shrink text; limits are <= 100)
+
+
+def strip_invisible(text: str) -> str:
+    """Drop invisible / control characters (Unicode Cf, Cc, Cs, Co, Cn); controls become a space, the rest vanish."""
+    out = []
+    for ch in text:
+        cat = unicodedata.category(ch)
+        if cat == "Cc":
+            out.append(" ")
+        elif cat not in _DROP_CATEGORIES:
+            out.append(ch)
+    return "".join(out)
 
 
 def clean(text, limit: int = 100) -> str:
-    """Untrusted text (branch names, commit subjects, paths) → single-line, redacted, bounded."""
-    s = redact(_CTRL.sub(" ", str(text or ""))).strip()
+    """Untrusted text (branch names, commit subjects, paths) → single-line, invisible-char free, redacted, bounded."""
+    s = redact(strip_invisible(str(text or "")[:_PRE_CUT])).strip()
     return s if len(s) <= limit else s[: limit - 1] + "…"
 
 

@@ -22,10 +22,31 @@ _PATTERNS = [
 ]
 # KEY=value / key: value where the key name looks secret-ish
 _ASSIGN = re.compile(
-    r"(?i)\b([A-Za-z0-9_.-]{0,64}(?:secret|token|passw(?:or)?d|passwd|pwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential|auth)[A-Za-z0-9_.-]{0,64})"
+    r"(?i)\b([A-Za-z0-9_.-]{0,64}(?:secret|token|passw(?:or)?d|passwd|pwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential|auth(?!or))[A-Za-z0-9_.-]{0,64})"
     r"(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;&|]+)"
 )
 _FLAG = re.compile(r"(?i)(--?(?:password|passwd|token|secret|api-?key|auth)[= ])(\S+)")
+# Extra credential spellings (all bounded / linear: no nested unbounded quantifiers around alternation).
+_EXTRA = [
+    # curl -u user:pass / --user user:pass
+    (re.compile(r"(?<![\w-])(-u|--user)(\s+|=)[\"']?[^\s:'\"]+:[^\s'\"]+[\"']?"), lambda m: m.group(1) + m.group(2) + REDACTED),
+    # curl --cookie VALUE
+    (re.compile(r"(?<![\w-])(--cookie)(\s+|=)(\"[^\"]*\"|'[^']*'|\S+)"), lambda m: m.group(1) + m.group(2) + REDACTED),
+    # mysql -phunter2 / sshpass -p x / docker login -p x   (--password-stdin is not matched: needs whitespace before -p)
+    (re.compile(r"(?i)\b(mysql|mysqldump|mysqladmin|mariadb|sshpass|(?:docker|podman)\s+login)\b([^\n|;&]{0,200}?\s)(-p)\s*(\"[^\"]*\"|'[^']*'|[^\s-]\S*)"),
+     lambda m: m.group(1) + m.group(2) + m.group(3) + " " + REDACTED),
+    # redis-cli -a x / openssl enc -k x / -pass x
+    (re.compile(r"(?i)\b(redis-cli|openssl)\b([^\n|;&]{0,200}?\s)(-a|-k|-pass|-passin|-passout)(\s+|=)(\"[^\"]*\"|'[^']*'|\S+)"),
+     lambda m: m.group(1) + m.group(2) + m.group(3) + m.group(4) + REDACTED),
+    # Cookie: / Set-Cookie: header values (to end of the quoted string / line)
+    (re.compile(r"(?i)\b(set-cookie|cookie)(\s*[:=]\s*)[^\r\n'\"]+"), lambda m: m.group(1) + m.group(2) + REDACTED),
+    # "aws_secret_access_key VALUE", "password VALUE"
+    (re.compile(r"(?i)\b(aws_secret_access_key|aws_session_token|passw(?:or)?d|passwd)(\s+)(\"[^\"]*\"|'[^']*'|[^\s,;&|=:'\"]+)"),
+     lambda m: m.group(1) + m.group(2) + REDACTED),
+    # provider token prefixes: HuggingFace, SendGrid, Google OAuth, npm, DigitalOcean
+    (re.compile(r"\b(?:hf_[A-Za-z0-9]{16,}|SG\.[A-Za-z0-9_-]{16,}(?:\.[A-Za-z0-9_-]{8,})?|ya29\.[A-Za-z0-9_-]{16,}|npm_[A-Za-z0-9]{16,}|dop_v1_[A-Za-z0-9]{16,})"),
+     lambda m: REDACTED),
+]
 
 
 def redact(text: str) -> str:
@@ -39,6 +60,8 @@ def redact(text: str) -> str:
     for pat in _PATTERNS[2:11]:
         out = pat.sub(REDACTED, out)
     out = _PATTERNS[11].sub(lambda m: m.group(1) + REDACTED + "@", out)
+    for pat, repl in _EXTRA:
+        out = pat.sub(repl, out)
     out = _ASSIGN.sub(lambda m: m.group(1) + m.group(2) + REDACTED, out)
     out = _FLAG.sub(lambda m: m.group(1) + REDACTED, out)
     return out

@@ -51,7 +51,7 @@ def resolve_repo(path: Optional[str]) -> tuple:
 
 
 def clip(text: str, n: int = 300) -> str:
-    text = redact(text or "")
+    text = redact((text or "")[: max(1000, n * 4)])
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
