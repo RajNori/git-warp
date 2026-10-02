@@ -2,13 +2,13 @@
 
 | OWNER | FILES | STATUS | VALIDATION |
 |---|---|---|---|
-| Lead | `planning/*`, plugin integration, skills, README, changelog | Implemented; independent review fixes applied and re-check in progress | Official Claude Code plugin validator passed; latest full checks passed |
+| Lead | `planning/*`, plugin integration, skills, README, changelog | Implemented; independent review complete | Official Claude Code plugin validator passed; latest full checks passed |
 | Core Git engineer | `scripts/git_warp/git.py`, shared models, `tests/test_git.py` | Implemented | Temporary-repository tests included in full suite |
 | Safety engineer | `scripts/git_warp/safety/*`, `scripts/git_guard.py`, `tests/test_safety.py` | Implemented | Adversarial parser/classifier tests included in full suite |
 | Forensics engineer | `scripts/git_warp/forensics/*`, rescue/archaeology/bisect skills, `tests/test_forensics.py` | Implemented | Temporary-repository history tests included in full suite |
 | Analysis engineer | `scripts/git_warp/analysis/*`, analysis skills, `tests/test_analysis.py` | Implemented | Evidence-analysis tests included in full suite |
 | Lead | `scripts/git_warp/memory/*`, hooks and memory CLI, `tests/test_memory.py`, `tests/test_hooks.py` | Implemented | Privacy, filesystem, and hook integration tests included in full suite |
-| Independent reviewer | `planning/REVIEW.md` | Initial review complete; validating fixes | Initial High and Medium findings have corresponding code fixes and regression coverage |
+| Independent reviewer | `planning/REVIEW.md` | Complete | No open Critical/High findings; the report records one remaining Medium indexing-performance limitation |
 
 ## Current quality gates
 
@@ -18,4 +18,4 @@
 - `claude plugin validate . --strict`: passed.
 - Interactive `claude --plugin-dir` session not run; it would start a live Claude Code session.
 
-All work remains local on `codex/greenfield-v1`. No push, PR, or merge was performed.
+Work is on `codex/greenfield-v1`. No PR or merge was performed.

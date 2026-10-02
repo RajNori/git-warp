@@ -74,3 +74,5 @@ python3 /path/to/git-warp/scripts/git_memory.py --cwd . history src/app.py
 ```
 
 `index` and query actions process up to 200 commits per invocation by default; repeated calls continue indexing. Use `--batch-size N` to change the batch size and `--limit N` to change the number of query results (capped at 200). The CLI prints JSON. `cochanges` counts files recorded in the same commits; that is historical association, not proof of dependency or ownership. `hotspots` counts indexed commits per path, not edits or current risk.
+
+The index reads and writes a bounded commit page per invocation. It counts and skips through the remaining Git history to resume, so indexing very large histories may revisit commits between batches.

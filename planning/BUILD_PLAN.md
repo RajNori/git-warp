@@ -12,8 +12,8 @@
 8. Add redacted flight recorder and incremental SQLite repository index. **Complete.**
 9. Security hardening and malformed/hostile-input tests. **Complete.**
 10. Run unit/integration/security checks and plugin static validation. **Complete.**
-11. Independent review; resolve Critical/High findings and investigate Medium findings. **In progress.**
-12. Align README and skills with verified behavior, then inspect full diff and leave a clean local branch. **In progress.**
+11. Independent review; resolve Critical/High findings and investigate Medium findings. **Complete; no open Critical/High findings.**
+12. Align README and skills with verified behavior, then inspect full diff and leave a clean reviewable branch. **Complete.**
 
 ## Acceptance rules
 
