@@ -1,23 +1,31 @@
-from _common import *
-root=repo_root()
-if not root:
-    print("Git Warp: current directory is not inside a Git repository."); raise SystemExit
+#!/usr/bin/env python3
+"""Claude Code SessionStart entry point."""
 
-def g(a):
-    rc,out,_=run_git(a,cwd=root); return out if rc==0 else ""
-branch=g(["branch","--show-current"]) or "(detached HEAD)"
-status=g(["status","--short"]); upstream=g(["rev-parse","--abbrev-ref","--symbolic-full-name","@{u}"])
-ab=g(["rev-list","--left-right","--count",f"{upstream}...HEAD"]) if upstream else "n/a"
-recent=g(["log","-5","--pretty=format:%h %ad %s","--date=short"])
-stashes=len([x for x in g(["stash","list"]).splitlines() if x.strip()])
-print(f"""Git Warp repository context
-- Root: {root}
-- Branch: {branch}
-- Upstream: {upstream or 'none'}
-- Ahead/behind: {ab}
-- Dirty paths: {len(status.splitlines()) if status else 0}
-- Stashes: {stashes}
-Recent commits:
-{recent or '(none)'}
-Safety policy: preserve work, prefer reversible Git operations, inspect reflog before recovery, explain history rewrites before performing them.
-""")
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from git_warp.hooks.common import event_cwd, read_event  # noqa: E402
+from git_warp.hooks.session_start import repository_context  # noqa: E402
+from git_warp.models import GitError  # noqa: E402
+
+
+def main() -> int:
+    event = read_event()
+    if event is None:
+        return 0
+    cwd = event_cwd(event) or str(Path.cwd())
+    try:
+        print(repository_context(cwd))
+    except (GitError, OSError, RuntimeError, ValueError):
+        # Context enrichment is optional; malformed/non-repository state must
+        # not prevent Claude Code from starting.
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
