@@ -126,10 +126,10 @@ def is_git_repository(cwd: Optional[PathLike] = None) -> bool:
     return r.ok and r.text == "true"
 
 
-def repo_root(cwd: Optional[PathLike] = None) -> Optional[Path]:
+def repo_root(cwd: Optional[PathLike] = None, timeout: float = DEFAULT_TIMEOUT) -> Optional[Path]:
     """Top level of the work tree, or None (bare repo / not a repo)."""
     try:
-        r = run(["rev-parse", "--show-toplevel"], cwd=cwd)
+        r = run(["rev-parse", "--show-toplevel"], cwd=cwd, timeout=timeout)
     except GitError:
         return None
     return Path(r.text) if r.ok and r.text else None
@@ -166,9 +166,9 @@ def is_shallow(cwd: Optional[PathLike] = None) -> bool:
 
 # --------------------------------------------------------------------------- refs
 
-def current_branch(cwd: Optional[PathLike] = None) -> Optional[str]:
+def current_branch(cwd: Optional[PathLike] = None, timeout: float = DEFAULT_TIMEOUT) -> Optional[str]:
     """Branch name; None when detached. Works on an unborn branch."""
-    r = run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd=cwd)
+    r = run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd=cwd, timeout=timeout)
     return r.text if r.ok and r.text else None
 
 

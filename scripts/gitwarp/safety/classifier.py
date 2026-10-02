@@ -195,6 +195,34 @@ RULES = {
     "too-complex": ("ask", "command too complex to analyse",
                     "The command is too long or deeply nested to analyse and mentions git.",
                     "Git Warp cannot verify it is safe.", ["Split it into smaller, simpler commands"]),
+    "option-unresolved": ("ask", "git <option>$VAR",
+                          "A Git option word carries an unresolved variable or substitution (for example `--hard$IFS`).",
+                          "Git Warp cannot see which flag it expands to, and the subcommand can destroy work.",
+                          ["Spell out the flags literally"]),
+    "interpreter-git": ("ask", "interpreter running a git command string",
+                        "An interpreter (python/node/ruby/perl...) is given a string containing a destructive Git command.",
+                        "Git Warp cannot see what the program will actually run.", ["Run the Git command directly so it can be reviewed"]),
+    "checkout-index-force": ("ask", "git checkout-index -f",
+                             "`git checkout-index --force` overwrites work-tree files from the index.",
+                             "Local modifications to those files are lost.", ["git diff  # review what would be lost first"]),
+    "read-tree-reset": ("deny", "git read-tree --reset -u",
+                        "`git read-tree --reset -u` overwrites the work tree like `git reset --hard`.",
+                        "Uncommitted changes are lost.", [_STASH, "git read-tree -m <tree>  # merge without reset"]),
+    "read-tree-reset-index": ("ask", "git read-tree --reset",
+                              "`git read-tree --reset` discards the index contents.", "Staged changes are lost.",
+                              ["git diff --cached  # review staged changes first"]),
+    "rm-tree": ("deny", "git rm -rf of the whole tree",
+                "`git rm -f/-r` of the whole tree deletes every tracked file from the work tree.",
+                "Uncommitted edits to those files are lost.", [_STASH, "git rm --cached <path>  # untrack without deleting"]),
+    "rm-tree-ask": ("ask", "git rm -r of the whole tree",
+                    "`git rm -r` of the whole tree removes every tracked file from the work tree and index.",
+                    "It is a very large deletion.", ["git rm --cached -r <path>  # untrack without deleting"]),
+    "update-ref-stdin": ("ask", "git update-ref --stdin",
+                         "`git update-ref --stdin` applies ref updates/deletions read from stdin that the guard cannot see.",
+                         "It can delete or move any branch.", ["Use `git update-ref <ref> <sha>` with explicit arguments"]),
+    "push-prune": ("ask", "git push --prune",
+                   "`git push --prune` deletes remote branches that have no local counterpart.",
+                   "Remote-only branches (other people's work) are removed.", ["git push <remote> <branch>  # push one branch"]),
     "env-alias": ("ask", "GIT_CONFIG alias via environment",
                   "An alias is injected through GIT_CONFIG_* environment variables.",
                   "Aliases can run arbitrary commands the guard cannot classify.", ["Run the real command spelled out"]),
@@ -202,7 +230,8 @@ RULES = {
 
 # ask-level rules that turn into deny in strict mode (history rewriting)
 HISTORY_RULES = frozenset({"rebase", "commit-amend", "branch-force-delete", "branch-force-move",
-                           "push-force", "push-delete", "reset-protected", "update-ref-protected"})
+                           "push-force", "push-delete", "reset-protected", "update-ref-protected",
+                           "push-prune"})
 
 GIT_SUBS = frozenset("""add am apply archive bisect blame branch bundle checkout cherry cherry-pick clean clone commit config describe diff
 fetch filter-branch filter-repo format-patch fsck gc grep init log ls-files ls-remote merge mv notes prune pull push range-diff rebase reflog
@@ -228,21 +257,28 @@ _WRAPPERS = {
 }
 
 
+def _all_rest(r: str) -> bool:
+    """``r`` (a pathspec without magic prefix) selects everything below the current directory/top."""
+    if r in _ALL_MAGIC_REST:
+        return True
+    return posixpath.normpath(r) in _ALL_MAGIC_REST    # './.', '././', './/', 'a/..' -> '.'
+
+
 def is_all_pathspec(t: str) -> bool:
-    """True for pathspecs that select the whole tree: ``.``, ``*``, ``:/``, ``:(top)``, ``..``."""
+    """True for pathspecs that select the whole tree: ``.``, ``./.``, ``*``, ``:/``, ``:(top)``, ``..``."""
     t = t.strip()
-    if t in ("..", "../"):
+    if t in ("..", "../") or (t and all(p in ("..", ".", "") for p in t.split("/"))):
         return True
     if t.startswith(":("):
         k = t.find(")")
         if k < 0 or "exclude" in t[:k]:
             return False
-        return t[k + 1:] in _ALL_MAGIC_REST
+        return _all_rest(t[k + 1:])
     if t.startswith(":/"):
-        return t[2:] in _ALL_MAGIC_REST
+        return _all_rest(t[2:])
     if t.startswith(":") and t[1:2] in ("!", "^"):
         return False
-    return t in _ALL_MAGIC_REST
+    return _all_rest(t)
 
 
 class Opts:
@@ -256,6 +292,7 @@ class Opts:
         self.dd: List[str] = []
         self.bare: List[str] = []
         self.has_dyn = False
+        self.dyn_flag = False      # an option-looking word with an unresolved suffix, e.g. --hard$IFS
         i, seen_dd, n = 0, False, len(words)
         while i < n:
             w = words[i]
@@ -263,6 +300,8 @@ class Opts:
             i += 1
             if w.dyn:
                 self.has_dyn = True
+                if t.startswith("-") and not w.bare and not seen_dd:
+                    self.dyn_flag = True
             if seen_dd:
                 self.dd.append(t)
                 continue
@@ -319,6 +358,7 @@ class _Ctx:
         self.commands: List[str] = []
         self.budget = Budget()
         self.strict = cfg.safety_mode == "strict"
+        self.depth = 0                                # script nesting depth of the invocation being classified
 
     def protected(self, name: Optional[str]) -> bool:
         if not name:
@@ -393,7 +433,7 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
         rest = list(words)
         cfgs, dir_override = [], False
     shown = "git " + _joined(words)
-    ctx.commands.append(redact(shown))
+    ctx.commands.append(redact(shown[:400]))   # cut BEFORE redacting (cheap, bounded)
     for c in cfgs:
         if c.lower().startswith("alias."):
             ctx.add("alias-inline")
@@ -408,10 +448,29 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
     if name in ("filter-branch", "filter-repo"):
         ctx.add("history-tool", tool="git " + name)
         return
+    if name == "gc":
+        _gc_config(cfgs, ctx)
+    before = len(ctx.found)
     if fn is not None:
         fn(rest, ctx, cands)
+    if (len(ctx.found) == before and name in _DESTRUCTIVE_SUBS
+            and any(w.dyn and not w.bare and w.text.startswith("-") for w in rest)):
+        ctx.add("option-unresolved")   # e.g. `git reset --hard$IFS`: a flag we cannot read on a destructive-capable subcommand
     if name in ("checkout", "switch") and not dir_override:
         _track_branch(name, rest, ctx)
+
+
+_DESTRUCTIVE_SUBS = frozenset({"reset", "clean", "push", "checkout", "restore", "branch", "gc", "reflog", "stash", "update-ref",
+                               "tag", "worktree", "switch", "prune", "rm", "read-tree", "checkout-index", "submodule", "rebase"})
+_EXPIRE_NOW = re.compile(r"^gc\.(prune|reflog)expire(unreachable)?\s*=\s*(now|all|0|0\.\w+)$", re.I)
+
+
+def _gc_config(cfgs: List[str], ctx: _Ctx) -> None:
+    """``git -c gc.pruneExpire=now gc`` is ``gc --prune=now``; gc.reflogExpire=now wipes the reflog."""
+    for c in cfgs:
+        m = _EXPIRE_NOW.match(c.strip())
+        if m:
+            ctx.add("gc-prune-now" if m.group(1).lower() == "prune" else "reflog-destroy")
 
 
 def _cand_label(cands) -> str:
@@ -460,8 +519,20 @@ def _h_clean(rest, ctx, cands):
         ctx.add("clean-unresolved")
 
 
+def _force_create(o: Opts, key: str, ctx: _Ctx, cands) -> None:
+    """``checkout -B`` / ``switch -C`` reset an existing branch to HEAD (like ``branch -f``).  Plain `-B newname` is
+    common and harmless (and cannot be told apart from a reset without asking Git), so this asks only when the named
+    branch is protected or cannot be read."""
+    if key not in o.shorts and not o.lopt("force-create", 3):
+        return
+    name = o.short_vals.get(key) or o.lval("force-create", 3) or ""
+    if not name or o.has_dyn or "$" in name or "`" in name or ctx.protected(name):
+        ctx.add("branch-force-move")
+
+
 def _h_checkout(rest, ctx, cands):
     o = Opts(rest, short_arg={"b", "B"}, long_arg={"orphan", "conflict", "pathspec-from-file"})
+    _force_create(o, "B", ctx, cands)
     if "f" in o.shorts or o.lopt("force", 3):
         ctx.add("checkout-force")
         return
@@ -473,6 +544,7 @@ def _h_checkout(rest, ctx, cands):
 
 def _h_switch(rest, ctx, cands):
     o = Opts(rest, short_arg={"c", "C"}, long_arg={"conflict"})
+    _force_create(o, "C", ctx, cands)
     if "f" in o.shorts or o.lopt("force", 3) or o.lopt("discard-changes", 2):
         ctx.add("switch-discard")
 
@@ -518,7 +590,10 @@ def _h_stash(rest, ctx, cands):
 def _h_update_ref(rest, ctx, cands):
     o = Opts(rest, short_arg={"m"}, long_arg={"message"})
     ref = o.pos[0] if o.pos else ""
-    if "d" in o.shorts:
+    if o.lopt("stdin", 3):
+        ctx.add("update-ref-stdin")      # stdin may hold `delete refs/heads/main`; cannot be inspected
+        return
+    if "d" in o.shorts or o.lopt("delete", 3):
         if not ref or o.has_dyn:
             ctx.add("update-ref-delete")
         elif ref == "HEAD" or ref.startswith("refs/heads/"):
@@ -546,6 +621,8 @@ def _h_push(rest, ctx, cands):
     refspecs = o.all_pos[1:]
     if "n" in o.shorts or o.lopt("dry-run", 3):
         return  # nothing is sent
+    if o.lopt("prune", 3):
+        ctx.add("push-prune")
     if mirror:
         ctx.add("push-mirror")
         return
@@ -623,6 +700,18 @@ def _h_rebase(rest, ctx, cands):
         if o.lopt(full, 3):
             return
     ctx.add("rebase")
+    ex = o.short_vals.get("x") if "x" in o.short_vals else o.lval("exec", 2)
+    if ex:
+        _run_string(ex, ctx)
+
+
+def _run_string(text: str, ctx: _Ctx) -> None:
+    """Classify a literal command string handed to git (``rebase --exec``, ``submodule foreach``, ``bisect run``)."""
+    try:
+        _script(text, ctx, ctx.depth + 1)
+    except (ShellParseError, RecursionError):
+        if "git" in text.lower():
+            ctx.add("too-complex")
 
 
 def _h_tag(rest, ctx, cands):
@@ -640,8 +729,53 @@ def _h_worktree(rest, ctx, cands):
 
 def _h_submodule(rest, ctx, cands):
     o = Opts(rest)
+    if o.pos and o.pos[0] == "foreach":
+        cmd_words = [w for w in rest if w.text not in ("foreach", "--recursive", "-q", "--quiet", "--")]
+        if cmd_words:
+            if any(w.dyn for w in cmd_words):
+                if _mentions_git(cmd_words):
+                    ctx.add("shell-git")
+            else:
+                _run_string(" ".join(w.text for w in cmd_words), ctx)
+        return
     if o.pos and o.pos[0] == "deinit" and ("f" in o.shorts or o.lopt("force", 3)):
         ctx.add("submodule-deinit-force")
+
+
+def _h_bisect(rest, ctx, cands):
+    for i, w in enumerate(rest):
+        if w.text == "run" and not w.dyn:
+            sub_words = rest[i + 1:]
+            if sub_words:
+                _words(sub_words, None, ctx, ctx.depth + 1)
+            return
+        if not w.text.startswith("-"):
+            return
+
+
+def _h_checkout_index(rest, ctx, cands):
+    o = Opts(rest)
+    if "f" in o.shorts or o.lopt("force", 3):
+        if "a" in o.shorts or o.lopt("all", 3) or any(is_all_pathspec(p) for p in o.all_pos):
+            ctx.add("checkout-discard-all")      # overwrites every file, like `restore .`
+        else:
+            ctx.add("checkout-index-force")
+
+
+def _h_read_tree(rest, ctx, cands):
+    o = Opts(rest)
+    if o.lopt("reset", 3):
+        ctx.add("read-tree-reset" if "u" in o.shorts else "read-tree-reset-index")
+
+
+def _h_git_rm(rest, ctx, cands):
+    o = Opts(rest)
+    if o.lopt("cached", 3) or o.lopt("dry-run", 3) or "n" in o.shorts:
+        return
+    if any(is_all_pathspec(p) for p in o.all_pos):
+        force = "f" in o.shorts or o.lopt("force", 3)
+        recursive = "r" in o.shorts or o.lopt("recursive", 3)
+        ctx.add("rm-tree-ask" if (recursive and not force) else "rm-tree")
 
 
 def _h_config(rest, ctx, cands):
@@ -665,6 +799,7 @@ _HANDLERS = {
     "reflog": _h_reflog, "gc": _h_gc, "prune": _h_prune, "stash": _h_stash, "update-ref": _h_update_ref,
     "push": _h_push, "branch": _h_branch, "commit": _h_commit, "rebase": _h_rebase, "tag": _h_tag,
     "worktree": _h_worktree, "submodule": _h_submodule, "config": _h_config, "remote": _h_remote,
+    "bisect": _h_bisect, "checkout-index": _h_checkout_index, "read-tree": _h_read_tree, "rm": _h_git_rm,
 }
 
 
@@ -702,6 +837,9 @@ def _skip_wrapper(name: str, args: List[Word], ctx: _Ctx, depth: int):
     return rest
 
 
+_ECHO_OPT = re.compile(r"^-[neE]+$")
+
+
 def _stdin_scripts(cmd: Optional[Cmd]) -> List[str]:
     """Literal text that is piped / here-doc'd into ``cmd`` (for ``echo ... | bash``)."""
     out: List[str] = []
@@ -712,9 +850,21 @@ def _stdin_scripts(cmd: Optional[Cmd]) -> List[str]:
     prev = cmd.pipe_prev
     if prev is not None and prev.words and not prev.words[0].dyn:
         pname = posixpath.basename(prev.words[0].text)
-        if pname in ("echo", "printf"):
-            args = [w for w in prev.words[1:] if not (w.text.startswith("-") and pname == "echo")]
+        if pname == "echo":
+            args = list(prev.words[1:])
+            while args and _ECHO_OPT.match(args[0].text):      # only leading -n/-e/-E; `--hard` etc. are data
+                args.pop(0)
             out.append(" ".join(w.text for w in args).replace("\\n", "\n"))
+        elif pname == "printf":
+            args = [w.text for w in prev.words[1:]]
+            if args:
+                if "%" in args[0]:          # format string: the operands are the printed data
+                    data = args[1:]
+                    out.append(" ".join(data))
+                    out.append("\n".join(data))
+                    out.append(args[0].replace("\\n", "\n"))
+                else:
+                    out.append(" ".join(args).replace("\\n", "\n"))
         elif pname == "cat":
             out.extend(prev.heredocs)
             out.extend(prev.herestrings)
@@ -732,8 +882,61 @@ def _mentions_git(words: List[Word]) -> bool:
     return any("git" in w.text.lower() for w in words)
 
 
+_IFS = re.compile(r"\$\{IFS[^}]*\}|\$IFS\b")
+# text/search/print tools whose arguments merely MENTION git (never run it), and remote/container launchers whose
+# behaviour is documented as a blind spot
+_TEXT_TOOLS = frozenset("""echo printf grep egrep fgrep rg ag ack cat less more man which type whereis head tail wc sed awk gawk nawk
+tr cut sort uniq diff cmp tee ls file stat open code vim vi nano emacs touch mkdir cp mv ln gh hub glab ssh scp sftp mosh
+docker podman kubectl nerdctl brew apt apt-get pip pip3 npm npx yarn pnpm cargo go whatis apropos info say osascript
+test [ [[ true false :""".split())
+_INTERP = re.compile(r"^(python[0-9.]*|pypy[0-9]*|node|nodejs|deno|bun|ruby|perl|php|lua|osascript)$")
+_GIT_PHRASE = re.compile(r"\bgit(?:-[a-z-]+)?\b[^'\"`)\n;]*")
+_GIT_ARGV = re.compile(r"""['"]\s*,\s*['"]""")
+
+
+def _split_ifs(words: List[Word]) -> List[Word]:
+    """``git${IFS}reset${IFS}--hard`` is three words to the shell: split on $IFS so the literal parts can be read."""
+    if not any(w.dyn and "IFS" in w.text for w in words):
+        return words
+    out: List[Word] = []
+    for w in words:
+        if w.dyn and "IFS" in w.text and _IFS.search(w.text):
+            for piece in _IFS.split(w.text):
+                if piece:
+                    out.append(Word(piece, dyn="$" in piece or "`" in piece, quoted=w.quoted))
+        else:
+            out.append(w)
+    return out
+
+
+def _is_git_word(w: Word) -> bool:
+    if w.dyn:
+        return False
+    b = posixpath.basename(w.text)
+    return b == "git" or (b.startswith("git-") and b[4:] in GIT_SUBS)
+
+
+def _interpreter(args: List[Word], ctx: _Ctx) -> None:
+    """``python3 -c "os.system('git reset --hard')"``: a literal string that contains a destructive git phrase -> ask."""
+    for w in args:
+        if w.dyn:
+            continue
+        text = _GIT_ARGV.sub(" ", w.text)
+        for m in _GIT_PHRASE.finditer(text):
+            probe = _Ctx(ctx.cfg, None)
+            probe.depth = ctx.depth
+            try:
+                _script(m.group(0), probe, ctx.depth + 1)
+            except (ShellParseError, RecursionError):
+                continue
+            if probe.found:
+                ctx.add("interpreter-git")
+                return
+
+
 def _words(words: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: int) -> None:
-    words = list(words)
+    ctx.depth = depth
+    words = _split_ifs(list(words))
     while words:
         t = words[0].text
         if not words[0].dyn and (t in RESERVED):
@@ -755,6 +958,11 @@ def _words(words: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: int) -> None
         if any(posixpath.basename(w.text) == "git" for w in words[1:]):
             ctx.add("unresolved-command")
             _words(words[1:], cmd, ctx, depth)
+        elif "git" in head.text.lower() or any(w.text in _HANDLERS or w.text in ("filter-branch", "filter-repo")
+                                               for w in words[1:4] if not w.dyn and not w.text.startswith("-")):
+            # `$(echo git) reset --hard`, `$GIT reset --hard`, `"$(which git)" ...`: the head could be git.
+            ctx.add("unresolved-command")
+            _git_invocation(words[1:], ctx)      # literal arguments may already prove it destructive (deny)
         return
     name = posixpath.basename(head.text)
     args = words[1:]
@@ -780,6 +988,15 @@ def _words(words: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: int) -> None
         ctx.cands = [None]
     elif name == "rm":
         _rm(args, ctx)
+    elif _INTERP.match(name):
+        _interpreter(args, ctx)
+    elif name not in _TEXT_TOOLS:
+        # Unknown launcher (arch, xcrun, flock, watch, parallel, script, busybox, chroot, unshare, ...): if a literal
+        # `git` word appears later, classify from there.  Text/search tools are excluded so `grep git` stays allowed.
+        for i, w in enumerate(args):
+            if _is_git_word(w):
+                _words(args[i:], cmd, ctx, depth)
+                break
 
 
 def _shell(name: str, args: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: int) -> None:
