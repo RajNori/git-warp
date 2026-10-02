@@ -2,7 +2,7 @@
 name: git-rescue
 description: This skill should be used when the user says they lost work in Git, for example "I lost my commits", "I ran git reset --hard", "I deleted a branch", "recover my stash", "my rebase went wrong", "I force-pushed over something", "commits disappeared after checkout", "work on detached HEAD is gone", or asks to find or restore dangling/unreachable commits. Gathers deterministic reflog and fsck evidence, ranks recovery candidates, and preserves one safely on a new branch.
 argument-hint: "[what was lost | --since \"2 hours ago\" | --grep TEXT | --path FILE]"
-allowed-tools: Read, Grep, Glob, Bash(python3:*), Bash(git log:*), Bash(git show:*), Bash(git reflog:*), Bash(git status:*), Bash(git diff:*), Bash(git rev-parse:*), Bash(git cat-file:*), Bash(git stash list:*)
+allowed-tools: Read, Grep, Glob, Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*), Bash(git log:*), Bash(git show:*), Bash(git reflog show:*), Bash(git status:*), Bash(git diff:*), Bash(git rev-parse:*), Bash(git cat-file:*), Bash(git stash list:*)
 ---
 
 # git-rescue

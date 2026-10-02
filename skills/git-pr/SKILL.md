@@ -2,7 +2,7 @@
 name: git-pr
 description: This skill should be used when the user asks to "write a PR", "create a pull request description", "prepare this branch for review", "review my branch", "PR summary", "what should reviewers look at", "is this branch ready to merge", or wants a hygiene check of the commits between a base branch and HEAD.
 argument-hint: "[base-branch] [--base REF] [--repo PATH]"
-allowed-tools: ["Bash(python3:*)", "Read", "Grep", "Glob", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git branch:*)", "Bash(git merge-base:*)", "Bash(git rev-list:*)"]
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*), Read, Grep, Glob, Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git branch --list:*), Bash(git branch --show-current:*), Bash(git branch -vv:*), Bash(git merge-base:*), Bash(git rev-list:*)
 ---
 
 # Git PR package

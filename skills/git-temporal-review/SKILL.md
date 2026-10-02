@@ -2,7 +2,7 @@
 name: git-temporal-review
 description: This skill should be used when the user asks for a "temporal review", "has this been tried before", "was this code removed before", "is this a regression", "why was this removed", "review my change against history", or before merging a change that re-adds deleted code, removes old fixes or toggles dependencies. Collects historical evidence (earlier removals, fix commits, reverts, dependency flip-flops) and warns only with cited commits.
 argument-hint: "[--base REF] [--limit N]"
-allowed-tools: Bash(python3:*), Read, Grep, Glob, Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git blame:*), Bash(git ls-files:*), Bash(git rev-parse:*), Bash(git merge-base:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*), Read, Grep, Glob, Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git blame:*), Bash(git ls-files:*), Bash(git rev-parse:*), Bash(git merge-base:*)
 ---
 
 # git-temporal-review: does history warn against this change?

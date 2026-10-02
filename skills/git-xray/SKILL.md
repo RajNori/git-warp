@@ -2,7 +2,7 @@
 name: git-xray
 description: This skill should be used when the user asks to "x-ray the repo", "run git xray", "what changed", "what's risky here", "is this branch safe", "what is uncommitted", "audit my repository", "check repo health", or wants a read-only Git state and risk analysis before committing, rebasing, merging or pushing.
 argument-hint: "[--untracked-all] [--repo PATH]"
-allowed-tools: ["Bash(python3:*)", "Read", "Grep", "Glob", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git branch:*)", "Bash(git stash list:*)", "Bash(git worktree list:*)", "Bash(git reflog:*)"]
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*), Read, Grep, Glob, Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git branch --list:*), Bash(git branch --show-current:*), Bash(git branch -vv:*), Bash(git stash list:*), Bash(git worktree list:*), Bash(git reflog show:*)
 ---
 
 # Git X-Ray

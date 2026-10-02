@@ -2,7 +2,7 @@
 name: git-commits
 description: This skill should be used when the user asks to "split my changes into commits", "group my changes", "what should I commit", "compose commits", "make atomic commits", "organize my working tree", "write commit messages for my changes", or has a large mixed set of staged/unstaged/untracked changes. Analyses the change set into semantic groups and proposes an ordered, Conventional Commits plan without staging or committing anything.
 argument-hint: "[--staged]"
-allowed-tools: Bash(python3:*), Read, Grep, Glob, Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git blame:*), Bash(git ls-files:*), Bash(git rev-parse:*), Bash(git merge-base:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*), Read, Grep, Glob, Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git blame:*), Bash(git ls-files:*), Bash(git rev-parse:*), Bash(git merge-base:*)
 ---
 
 # git-commits: semantic commit composer

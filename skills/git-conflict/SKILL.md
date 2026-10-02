@@ -2,7 +2,7 @@
 name: git-conflict
 description: This skill should be used when the user hits a merge, rebase, cherry-pick or revert conflict, says "resolve this conflict", "what does this conflict mean", "which side should I keep", "explain these conflict markers", "ours vs theirs", or git reports "CONFLICT" or "Unmerged paths". Analyses both sides with ancestry and proposes a resolution without touching files.
 argument-hint: ""
-allowed-tools: Bash(python3:*), Read, Grep, Glob, Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git blame:*), Bash(git ls-files:*), Bash(git rev-parse:*), Bash(git merge-base:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*), Read, Grep, Glob, Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git blame:*), Bash(git ls-files:*), Bash(git rev-parse:*), Bash(git merge-base:*)
 ---
 
 # git-conflict: conflict ancestry and proposed resolution

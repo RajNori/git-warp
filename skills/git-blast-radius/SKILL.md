@@ -2,7 +2,7 @@
 name: git-blast-radius
 description: This skill should be used when the user asks "what does this change affect", "blast radius", "what could break", "who depends on this file", "impact analysis", "is this change risky", "which tests should I run", or wants to understand the downstream impact of a diff, branch or specific files before committing or opening a PR.
 argument-hint: "[paths...] [--base REF]"
-allowed-tools: Bash(python3:*), Read, Grep, Glob, Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git blame:*), Bash(git ls-files:*), Bash(git rev-parse:*), Bash(git merge-base:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*), Read, Grep, Glob, Bash(git status:*), Bash(git diff:*), Bash(git log:*), Bash(git show:*), Bash(git blame:*), Bash(git ls-files:*), Bash(git rev-parse:*), Bash(git merge-base:*)
 ---
 
 # git-blast-radius: explainable impact analysis

@@ -2,7 +2,7 @@
 name: git-archaeology
 description: This skill should be used when the user asks how or why code evolved, for example "who introduced this", "when was this function added", "why does this file look like this", "history of src/foo.py", "trace this symbol through history", "was this reverted", "what's the story behind this bug", or wants the smallest set of commits to read to understand a file, directory, symbol, or decision. Builds a fact-versus-inference timeline from git data.
 argument-hint: "<path> | --symbol NAME | --regex RE | --question \"text\" [--since DATE] [--limit N]"
-allowed-tools: Read, Grep, Glob, Bash(python3:*), Bash(git log:*), Bash(git show:*), Bash(git blame:*), Bash(git diff:*), Bash(git rev-parse:*)
+allowed-tools: Read, Grep, Glob, Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*), Bash(git log:*), Bash(git show:*), Bash(git blame:*), Bash(git diff:*), Bash(git rev-parse:*)
 ---
 
 # git-archaeology

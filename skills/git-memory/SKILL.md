@@ -2,7 +2,7 @@
 name: git-memory
 description: Answer questions about repository history from Git Warp's local index. Use when the user asks what files change together, co-change or coupling, hotspots, high-churn or risky areas, when a file was introduced, which areas were reverted, who has contributed to a path, what happened in earlier sessions, or asks to index, inspect, or wipe repository memory.
 argument-hint: "[index|status|cochange <path>|hotspots|churn [prefix]|introduced <path>|reverts|authors <path>|sessions|forget]"
-allowed-tools: Bash(python3:*), Read, Grep, Glob
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*), Read, Grep, Glob
 ---
 
 # git-memory
