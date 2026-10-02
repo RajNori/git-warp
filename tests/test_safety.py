@@ -76,6 +76,9 @@ class ClassifierTests(unittest.TestCase):
             "git push -f origin HEAD:refs/heads/main",
             "git push --force-with-lease=main origin x:main",
             "git push +feature:main",
+            "git push origin +HEAD:main",
+            "git push origin +HEAD:refs/heads/main",
+            "git push origin feature:main +other:refs/heads/production",
         ]
         for command in cases:
             with self.subTest(command=command):

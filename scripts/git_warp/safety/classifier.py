@@ -220,13 +220,17 @@ def classify_tokens(tokens: Iterable[str], context: SafetyContext | None = None)
 
     if subcommand == "push":
         force = any(o in {"-f", "--force", "--force-with-lease"} or o.startswith("--force-with-lease=") for o in opts)
-        # A leading '+' on a refspec is also an explicit forced update.
-        if positional and (":" in positional[0] or positional[0].startswith("+")):
-            force = force or positional[0].startswith("+")
+        # `git push [<repository> [<refspec>...]]`: the remote usually occupies
+        # the first positional. A leading '+' on any later refspec is itself a
+        # forced update, even when no --force option is present.
+        has_remote = len(positional) > 1 and not positional[0].startswith("+")
+        refspecs = positional[1:] if has_remote else (
+            positional if positional and positional[0].startswith("+") else ()
+        )
+        force = force or any(refspec.startswith("+") for refspec in refspecs)
         if force:
-            # Remote is the first positional, refspecs follow. No repository
-            # state is consulted; if destination is not explicit, review it.
-            refspecs = positional if positional and (":" in positional[0] or positional[0].startswith("+")) else positional[1:]
+            # No repository state is consulted; if destination is not explicit,
+            # review it rather than guessing.
             destinations = [_protected_destination(ref, context) for ref in refspecs]
             protected = next((ref for ref in destinations if ref), None)
             if protected:
