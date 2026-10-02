@@ -59,6 +59,20 @@ class MemoryTests(unittest.TestCase):
         self.assertIn(first[:12], {row["sha"][:12] for row in history})
         self.assertTrue((self.root / ".git" / "git-warp" / "warp.db").exists())
 
+    def test_index_history_reads_and_writes_bounded_batches(self) -> None:
+        for number in range(7):
+            self.commit(f"change {number}", {f"file-{number}.txt": f"{number}\n"})
+        index = RepositoryIndex(self.root)
+        results = []
+        while True:
+            result = index.index_history(batch_size=2)
+            self.assertLessEqual(result["indexed"], 2)
+            results.append(result)
+            if result["remaining"] == 0:
+                break
+        self.assertGreaterEqual(len(results), 4)
+        self.assertEqual(sum(row["indexed"] for row in results), 7)
+
     def test_recorder_excludes_raw_tool_input_and_sensitive_paths(self) -> None:
         self.commit("initial", {"src/main.py": "ok\n"})
         (self.root / "src" / "main.py").write_text("changed\n", encoding="utf-8")

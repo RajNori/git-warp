@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 
 from ..git import DEFAULT_TIMEOUT_SECONDS
-from .common import log_records, read, root
+from .common import log_records, read, resolve_commit, root
 from .models import Analysis, Evidence
 
 _STOP = {"a", "an", "and", "as", "at", "by", "fix", "for", "from", "in", "of", "on", "the", "to", "with", "update", "updated", "add", "change", "changes"}
@@ -65,8 +65,8 @@ def _parse_hunks(patch: str, scope: str) -> list[dict]:
 
 
 def _working_tree_groups(cwd: Path, timeout: float) -> Analysis:
-    staged = read(cwd, ("diff", "--cached", "--no-ext-diff", "--unified=3", "--"), timeout, check=False)
-    unstaged = read(cwd, ("diff", "--no-ext-diff", "--unified=3", "--"), timeout, check=False)
+    staged = read(cwd, ("diff", "--cached", "--no-ext-diff", "--no-textconv", "--unified=3", "--"), timeout, check=False)
+    unstaged = read(cwd, ("diff", "--no-ext-diff", "--no-textconv", "--unified=3", "--"), timeout, check=False)
     units = _parse_hunks(staged, "staged") + _parse_hunks(unstaged, "unstaged")
     groups: list[dict] = []
     for unit in units:
@@ -100,5 +100,5 @@ def propose_commit_groups(cwd: str | Path, *, revs: str | None = None, limit: in
     """Cluster existing commits when ``revs`` is supplied; otherwise analyze current diff hunks."""
     repo = root(cwd, timeout)
     if revs is not None:
-        return _revision_groups(repo, revs, limit, timeout)
+        return _revision_groups(repo, resolve_commit(repo, revs, timeout), limit, timeout)
     return _working_tree_groups(repo, timeout)

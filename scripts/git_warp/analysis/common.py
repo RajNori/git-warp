@@ -27,9 +27,24 @@ def head(cwd: str | Path, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> str | Non
     return value or None
 
 
+def resolve_commit(cwd: str | Path, revision: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> str:
+    """Resolve caller-supplied revision syntax to an opaque commit ID.
+
+    Analysis services pass only this returned object ID to diff/log commands,
+    so revision text can never be reinterpreted as a Git command option.
+    """
+    if not isinstance(revision, str) or not revision or revision.startswith("-") or "\x00" in revision:
+        raise ValueError("revision must name a commit")
+    value = read(cwd, ("rev-parse", "--verify", "--quiet", "--end-of-options", f"{revision}^{{commit}}"), timeout, check=False).strip()
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", value):
+        raise ValueError("revision must resolve to a commit")
+    return value
+
+
 def changed_paths(cwd: str | Path, base: str | None = None, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> tuple[str, ...]:
     if base:
-        raw = read(cwd, ("diff", "--name-only", "-z", "--no-ext-diff", base, "--"), timeout)
+        base_oid = resolve_commit(cwd, base, timeout)
+        raw = read(cwd, ("diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", base_oid, "--"), timeout)
         paths = list(p for p in raw.split("\0") if p)
         # A revision diff does not include untracked files; include those as
         # independent worktree evidence without treating them as diff content.
@@ -61,15 +76,16 @@ def changed_paths(cwd: str | Path, base: str | None = None, timeout: float = DEF
 
 
 def diff_stat(cwd: str | Path, base: str | None = None, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> str:
-    args = ["diff", "--stat", "--no-ext-diff"]
+    args = ["diff", "--stat", "--no-ext-diff", "--no-textconv"]
     if base:
-        args.extend((base, "--"))
+        args.extend((resolve_commit(cwd, base, timeout), "--"))
     return read(cwd, args, timeout)
 
 
 def log_records(cwd: str | Path, revs: str = "HEAD", limit: int = 100, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> tuple[tuple[str, str, str], ...]:
     # Unit-separator fields and NUL record separators keep subject/path text intact.
-    raw = read(cwd, ("log", "--format=%H%x1f%s%x1f%an%x00", f"-n{limit}", revs, "--"), timeout, check=False)
+    revision = resolve_commit(cwd, revs, timeout)
+    raw = read(cwd, ("log", "--format=%H%x1f%s%x1f%an%x00", f"-n{limit}", revision, "--"), timeout, check=False)
     records = []
     for item in raw.split("\0"):
         fields = item.strip("\r\n").split("\x1f")
@@ -107,6 +123,6 @@ def source_files(root: Path, *, limit: int = 5000) -> tuple[Path, ...]:
     for path in root.rglob("*"):
         if len(result) >= limit:
             break
-        if path.is_file() and not any(part in ignored for part in path.relative_to(root).parts) and path.suffix.lower() in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
+        if not path.is_symlink() and path.is_file() and not any(part in ignored for part in path.relative_to(root).parts) and path.suffix.lower() in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
             result.append(path)
     return tuple(result)

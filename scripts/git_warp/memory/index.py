@@ -78,26 +78,29 @@ class RepositoryIndex:
                 (key, value),
             )
 
-    def _commit_shas(self, last: str | None) -> list[str]:
+    def _commit_shas(self, last: str | None, batch_size: int) -> tuple[list[str], int]:
         if last:
             ancestor = run_git(("merge-base", "--is-ancestor", last, "HEAD"), cwd=self.root, timeout=self.timeout)
             if ancestor.returncode == 0:
-                args = ("rev-list", "--reverse", "HEAD", f"^{last}")
+                revisions = ("HEAD", f"^{last}")
             else:
-                # Branch movement or a rewritten history requires checking the
-                # reachable commit set, but the database still inserts only
-                # missing SHAs and never discards prior evidence.
-                args = ("rev-list", "--reverse", "HEAD")
+                # On rewritten/diverged history, resume from the oldest commits
+                # on the new HEAD. The saved cursor advances by a bounded page;
+                # INSERT OR IGNORE keeps previously indexed commits intact.
+                revisions = ("HEAD",)
         else:
-            args = ("rev-list", "--reverse", "HEAD")
+            revisions = ("HEAD",)
+        count_result = run_git(("rev-list", "--count", *revisions), cwd=self.root, timeout=self.timeout)
+        if count_result.returncode != 0 or not count_result.stdout.strip().isdigit():
+            return [], 0
+        total = int(count_result.stdout.strip())
+        skip = max(0, total - batch_size)
+        args = ("rev-list", "--reverse", f"--skip={skip}", f"--max-count={batch_size}", *revisions)
         result = run_git(args, cwd=self.root, timeout=self.timeout)
         if result.returncode != 0:
-            return []
-        return [line for line in result.stdout.splitlines() if line]
-
-    def _indexed_shas(self) -> set[str]:
-        with self._connect() as db:
-            return {str(row[0]) for row in db.execute("SELECT sha FROM commits")}
+            return [], total
+        batch = [line for line in result.stdout.splitlines() if line]
+        return batch, max(0, total - len(batch))
 
     def index_history(self, *, batch_size: int = 200) -> dict[str, int | str | None]:
         """Index up to batch_size commits; repeated calls resume incrementally."""
@@ -107,14 +110,12 @@ class RepositoryIndex:
         if head is None:
             return {"indexed": 0, "remaining": 0, "head": None}
         last = self._state("last_indexed_sha")
-        shas = self._commit_shas(last)
-        indexed = self._indexed_shas()
-        pending = [sha for sha in shas if sha not in indexed]
-        batch = pending[:batch_size]
+        batch, remaining = self._commit_shas(last, batch_size)
         if not batch:
             self._put_state("last_indexed_sha", head)
             return {"indexed": 0, "remaining": 0, "head": head}
 
+        inserted = 0
         with self._connect() as db:
             for sha in batch:
                 meta = run_git(
@@ -131,10 +132,12 @@ class RepositoryIndex:
                 author = redact_text(author, limit=200)
                 authored_at = redact_text(authored_at, limit=80)
                 subject = redact_text(subject, limit=512)
-                db.execute(
+                cursor = db.execute(
                     "INSERT OR IGNORE INTO commits(sha, author, authored_at, subject) VALUES(?, ?, ?, ?)",
                     (sha, author, authored_at, subject),
                 )
+                if cursor.rowcount:
+                    inserted += 1
                 files = run_git(
                     ("diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", "--end-of-options", sha),
                     cwd=self.root,
@@ -153,7 +156,7 @@ class RepositoryIndex:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (batch[-1],),
             )
-        return {"indexed": len(batch), "remaining": max(0, len(pending) - len(batch)), "head": head}
+        return {"indexed": inserted, "remaining": remaining, "head": head}
 
     def hotspots(self, *, limit: int = 20) -> list[dict[str, Any]]:
         with self._connect() as db:

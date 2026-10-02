@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 from ..git import DEFAULT_TIMEOUT_SECONDS
-from .common import read, root
+from .common import read, resolve_commit, root
 from .models import Analysis, Evidence, Finding
 
 
@@ -21,6 +21,7 @@ def _blame_shas(repo: Path, rev: str, path: str, timeout: float) -> tuple[str, .
 
 def inspect_conflicts(cwd: str | Path, *, base: str | None = None, timeout: float = DEFAULT_TIMEOUT_SECONDS, content_limit: int = 12000) -> Analysis:
     repo = root(cwd, timeout)
+    resolved_base = resolve_commit(repo, base, timeout) if base else None
     raw = read(repo, ("ls-files", "-u", "-z"), timeout)
     stages: dict[str, dict[int, str]] = {}
     for record in raw.split("\0"):
@@ -32,9 +33,9 @@ def inspect_conflicts(cwd: str | Path, *, base: str | None = None, timeout: floa
             stages.setdefault(path, {})[int(parts[2])] = parts[1]
     merge_base = None
     branch_commits: dict[str, tuple[tuple[str, str], ...]] = {"ours_only": (), "base_only": ()}
-    if base:
-        merge_base = read(repo, ("merge-base", "--", "HEAD", base), timeout, check=False).strip() or None
-        for label, rev_range in (("ours_only", f"{base}..HEAD"), ("base_only", f"HEAD..{base}")):
+    if resolved_base:
+        merge_base = read(repo, ("merge-base", "--", "HEAD", resolved_base), timeout, check=False).strip() or None
+        for label, rev_range in (("ours_only", f"{resolved_base}..HEAD"), ("base_only", f"HEAD..{resolved_base}")):
             lines = read(repo, ("log", "--format=%H%x1f%s", "--max-count=20", rev_range, "--"), timeout, check=False).splitlines()
             branch_commits[label] = tuple((fields[0], fields[1]) for line in lines if len((fields := line.split("\x1f", 1))) == 2)
     findings = []
@@ -51,8 +52,8 @@ def inspect_conflicts(cwd: str | Path, *, base: str | None = None, timeout: floa
         uncertainties = (("One or more index stages are absent, as can happen for add/delete conflicts.",) if missing else ()) + ("Textual comparison cannot establish intended semantics; no automatic resolution is proposed.",)
         findings.append(Finding("Unmerged path", f"{path} has index stage(s) {', '.join(map(str, sorted(values)))}.", tuple(Evidence(f"stage {s}", values[s]) for s in sorted(values)), uncertainties, "high"))
         branch_blame: dict[str, tuple[str, ...]] = {}
-        if base:
-            for side, rev in (("ours", "HEAD"), ("base", base)):
+        if resolved_base:
+            for side, rev in (("ours", "HEAD"), ("base", resolved_base)):
                 shas = _blame_shas(repo, rev, path, timeout)
                 branch_blame[side] = shas
                 evidence.extend(Evidence(f"{side} blame", path, sha) for sha in shas)
@@ -64,8 +65,8 @@ def inspect_conflicts(cwd: str | Path, *, base: str | None = None, timeout: floa
         for sha, subject in commits:
             evidence.append(Evidence(f"{side} branch commit", subject, sha))
     uncertainty = [] if stages else ["No unmerged index entries were found; an already resolved conflict or merge intent may not be represented."]
-    if base and not merge_base:
-        uncertainty.append(f"Could not determine a merge base with {base}; branch-side commit comparisons may be incomplete.")
-    if base:
+    if resolved_base and not merge_base:
+        uncertainty.append(f"Could not determine a merge base with {resolved_base}; branch-side commit comparisons may be incomplete.")
+    if resolved_base:
         uncertainty.append("Blame and branch commit evidence describe history only; they do not establish which side's intent should win.")
-    return Analysis("conflict", f"Found {len(stages)} unresolved path(s)." + (f" Merge base with {base}: {merge_base or 'unavailable'}." if base else ""), tuple(findings), tuple(evidence), tuple(uncertainty), tuple(proposals), {"merge_base": merge_base, "paths": tuple(sorted(stages)), "branch_commits": branch_commits, "blame": blame_evidence})
+    return Analysis("conflict", f"Found {len(stages)} unresolved path(s)." + (f" Merge base with {resolved_base}: {merge_base or 'unavailable'}." if resolved_base else ""), tuple(findings), tuple(evidence), tuple(uncertainty), tuple(proposals), {"merge_base": merge_base, "paths": tuple(sorted(stages)), "branch_commits": branch_commits, "blame": blame_evidence})

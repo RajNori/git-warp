@@ -66,6 +66,34 @@ class AnalysisTests(unittest.TestCase):
         self.assertIn("consumer.py", result.metadata["dependants"]["lib.py"])
         self.assertIn("src/use.ts", result.metadata["dependants"]["src/util.ts"])
 
+    def test_blast_radius_nested_cwd_still_scans_repository_root(self) -> None:
+        nested = self.root / "src" / "nested"
+        nested.mkdir(parents=True)
+        (self.root / "lib.py").write_text("value = 1\n")
+        (self.root / "consumer.py").write_text("from lib import value\n")
+        self.commit("base")
+        (self.root / "lib.py").write_text("value = 2\n")
+        result = analyze_blast_radius(nested)
+        self.assertIn("consumer.py", result.metadata["dependants"]["lib.py"])
+
+    def test_caller_revision_options_are_rejected_without_writing_files(self) -> None:
+        (self.root / "base.txt").write_text("base\n")
+        base = self.commit("base")
+        probe = self.root / "analysis-option-probe"
+        malicious = f"--output={probe}"
+        for analyze in (
+            lambda: analyze_xray(self.root, base=malicious),
+            lambda: analyze_blast_radius(self.root, base=malicious),
+            lambda: analyze_pr(self.root, malicious),
+            lambda: inspect_conflicts(self.root, base=malicious),
+            lambda: propose_commit_groups(self.root, revs=malicious),
+        ):
+            with self.subTest(analyze=analyze):
+                with self.assertRaises(ValueError):
+                    analyze()
+                self.assertFalse(probe.exists())
+        self.assertEqual(analyze_xray(self.root, base=base).metadata["paths"], ())
+
     def test_conflict_inspection_reads_stages_without_resolution(self) -> None:
         (self.root / "f.txt").write_text("base\n")
         self.commit("base")

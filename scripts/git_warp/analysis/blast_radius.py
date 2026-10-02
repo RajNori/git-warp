@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 from ..git import DEFAULT_TIMEOUT_SECONDS
-from .common import changed_paths, source_files
+from .common import changed_paths, root as repo_root, source_files
 from .models import Analysis, Evidence, Finding
 
 _JS_IMPORT = re.compile(r"(?:\bfrom\s*|\bimport\s*\(|\brequire\s*\()\s*[\"']([^\"']+)[\"']")
@@ -33,7 +33,7 @@ def _matches(root: Path, importer: Path, reference: str, candidates: dict[str, P
     return {p.resolve() for p in probes if p.exists() and p.is_file()}
 
 def analyze_blast_radius(cwd: str | Path, *, base: str | None = None, timeout: float = DEFAULT_TIMEOUT_SECONDS, file_limit: int = 5000) -> Analysis:
-    root = Path(cwd).resolve()
+    root = repo_root(cwd, timeout)
     changed = tuple(p for p in changed_paths(root, base, timeout) if Path(p).suffix.lower() in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"})
     files = source_files(root, limit=file_limit)
     truncated = len(files) >= file_limit

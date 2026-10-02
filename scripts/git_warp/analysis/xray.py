@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 
 from ..git import DEFAULT_TIMEOUT_SECONDS, current_branch
-from .common import changed_paths, diff_stat, evidence_paths, head, log_records, porcelain_entries, read, root
+from .common import changed_paths, diff_stat, evidence_paths, head, log_records, porcelain_entries, read, resolve_commit, root
 from .models import Analysis, Evidence, Finding
 
 _PATH_SIGNALS = {
@@ -33,7 +33,7 @@ def _signals(paths: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
 
 
 def _diff_args(base: str | None) -> tuple[str, ...]:
-    return ("diff", "--no-ext-diff", "--unified=0", *((base,) if base else ("HEAD",)), "--")
+    return ("diff", "--no-ext-diff", "--no-textconv", "--unified=0", *((base,) if base else ("HEAD",)), "--")
 
 
 def _hotspots(repo: Path, timeout: float, limit: int = 200) -> tuple[tuple[str, int], ...]:
@@ -48,7 +48,8 @@ def _hotspots(repo: Path, timeout: float, limit: int = 200) -> tuple[tuple[str, 
 
 def analyze_xray(cwd: str | Path, *, base: str | None = None, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> Analysis:
     repo = root(cwd, timeout)
-    paths = changed_paths(repo, base, timeout)
+    resolved_base = resolve_commit(repo, base, timeout) if base else None
+    paths = changed_paths(repo, resolved_base, timeout)
     current = head(repo, timeout)
     branch = current_branch(cwd=repo, timeout=timeout)
     status = porcelain_entries(repo, timeout)
@@ -85,7 +86,7 @@ def analyze_xray(cwd: str | Path, *, base: str | None = None, timeout: float = D
     if not stashes:
         uncertainty.append("No stash entries were listed; stash availability may be disabled or empty.")
 
-    patch = read(repo, _diff_args(base), timeout, check=False)
+    patch = read(repo, _diff_args(resolved_base), timeout, check=False)
     if any(_SECRET_RE.search(line[1:]) for line in patch.splitlines() if line.startswith("+")):
         findings.append(Finding("Possible secret-like added value", "An added diff line matched a credential-shaped pattern; the matching value is intentionally not reproduced.", (), ("Pattern matching is incomplete and can flag placeholders; verify securely in the source diff.",), "high"))
     if any(_DEBUG_RE.search(line[1:]) for line in patch.splitlines() if line.startswith("+")):
@@ -106,18 +107,17 @@ def analyze_xray(cwd: str | Path, *, base: str | None = None, timeout: float = D
     evidence.extend(Evidence("status", f"{xy} {path}") for xy, path in status)
     if upstream:
         evidence.append(Evidence("upstream", upstream))
-    summary = f"{len(paths)} changed path(s)" + (f" relative to {base}" if base else " in the worktree")
-    return Analysis("xray", summary, tuple(findings), tuple(evidence), tuple(uncertainty), boundaries, {"repository_root": str(repo), "paths": paths, "status": status, "staged": staged, "unstaged": unstaged, "untracked": untracked, "branch": branch, "detached": branch is None, "upstream": upstream, "ahead_behind": ahead_behind, "stashes": stashes, "worktrees": worktrees, "reflog": reflog, "historical_hotspots": historical_hotspots, "signals": signals, "stat": diff_stat(repo, base, timeout), "head": current, "recent_commits": log_records(repo, limit=15, timeout=timeout)})
+    summary = f"{len(paths)} changed path(s)" + (f" relative to {resolved_base}" if resolved_base else " in the worktree")
+    return Analysis("xray", summary, tuple(findings), tuple(evidence), tuple(uncertainty), boundaries, {"repository_root": str(repo), "paths": paths, "status": status, "staged": staged, "unstaged": unstaged, "untracked": untracked, "branch": branch, "detached": branch is None, "upstream": upstream, "ahead_behind": ahead_behind, "stashes": stashes, "worktrees": worktrees, "reflog": reflog, "historical_hotspots": historical_hotspots, "signals": signals, "stat": diff_stat(repo, resolved_base, timeout), "head": current, "recent_commits": log_records(repo, limit=15, timeout=timeout)})
 
 
 def analyze_pr(cwd: str | Path, base: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> Analysis:
-    if not base or base.startswith("-"):
-        raise ValueError("base must be a non-option Git revision")
     repo = root(cwd, timeout)
-    comparison = f"{base}...HEAD"
-    raw_paths = read(repo, ("diff", "--name-only", "-z", "--no-ext-diff", comparison, "--"), timeout)
+    resolved_base = resolve_commit(repo, base, timeout)
+    comparison = f"{resolved_base}...HEAD"
+    raw_paths = read(repo, ("diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", comparison, "--"), timeout)
     paths = tuple(p for p in raw_paths.split("\0") if p)
-    raw = read(repo, ("diff", "--numstat", "--no-ext-diff", comparison, "--"), timeout)
+    raw = read(repo, ("diff", "--numstat", "--no-ext-diff", "--no-textconv", comparison, "--"), timeout)
     additions = deletions = 0
     for line in raw.splitlines():
         cols = line.split("\t", 2)
@@ -134,7 +134,7 @@ def analyze_pr(cwd: str | Path, base: str, *, timeout: float = DEFAULT_TIMEOUT_S
     code = [p for p in paths if p.lower().endswith((".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".rb")) and p not in tests]
     if code and not tests:
         findings.append(Finding("No test paths in diff", "Changed source files have no matching test/spec paths in the compared change set.", evidence_paths(code), ("Tests may exist outside the diff or use an unrecognized naming convention.",), "medium"))
-    patch = read(repo, ("diff", "--no-ext-diff", "--unified=0", comparison, "--"), timeout, check=False)
+    patch = read(repo, ("diff", "--no-ext-diff", "--no-textconv", "--unified=0", comparison, "--"), timeout, check=False)
     added_lines = [(i, line[1:]) for i, line in enumerate(patch.splitlines(), 1) if line.startswith("+") and not line.startswith("+++")]
     if any(_SECRET_RE.search(line) for _, line in added_lines):
         findings.append(Finding("Possible secret-like added value", "An added diff line matched a credential-shaped pattern; values are not copied into the report.", (), ("Regex matching can miss secrets and can flag examples or placeholders; inspect the diff securely.",), "high"))
@@ -153,7 +153,7 @@ def analyze_pr(cwd: str | Path, base: str, *, timeout: float = DEFAULT_TIMEOUT_S
     if not tests and code:
         questions.append("Which automated checks cover the changed source paths?")
     rollback = "Revert the change commit(s) after checking for irreversible data migrations or external side effects." if signals.get("migration") else "Revert the change commit(s); inspect external side effects before rollback."
-    evidence = [Evidence("diff base", base), *evidence_paths(paths), Evidence("HEAD", head(repo, timeout) or "unborn")]
-    stat = read(repo, ("diff", "--stat", "--no-ext-diff", comparison, "--"), timeout)
+    evidence = [Evidence("diff base", resolved_base), *evidence_paths(paths), Evidence("HEAD", head(repo, timeout) or "unborn")]
+    stat = read(repo, ("diff", "--stat", "--no-ext-diff", "--no-textconv", comparison, "--"), timeout)
     metadata = {"paths": paths, "stat": stat, "additions": additions, "deletions": deletions, "signals": signals, "architecture_paths": arch, "migration_implications": tuple(signals.get("migration", ())), "rollback_consideration": rollback, "reviewer_questions": tuple(questions), "generated_paths": tuple(signals.get("generated", ())), "secret_scan": "heuristic added-line scan; matched values withheld"}
-    return Analysis("pr", f"{len(paths)} path(s), +{additions}/-{deletions} lines against {base}", tuple(findings), tuple(evidence), ("Static path and diff heuristics do not establish test coverage, runtime behavior, or mergeability.",), metadata=metadata)
+    return Analysis("pr", f"{len(paths)} path(s), +{additions}/-{deletions} lines against {resolved_base}", tuple(findings), tuple(evidence), ("Static path and diff heuristics do not establish test coverage, runtime behavior, or mergeability.",), metadata=metadata)
