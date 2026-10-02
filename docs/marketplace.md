@@ -73,8 +73,8 @@ Derived from the repository's current state. Unchecked means not done or not ver
 
 ### Verification not yet done
 
-- [ ] Re-run the test suite on the commit to be released (1070 passed at checkpoint `da94148`; not re-run during
-      documentation work). There is no CI configuration in the repository.
+- [ ] Re-run the test suite on the commit to be released (the project lead reports 1345 passed now, 1070 at
+      checkpoint `da94148`; not re-run during documentation work). There is no CI configuration in the repository.
 - [ ] End-to-end check in a real interactive Claude Code session: skills trigger from natural language, the hooks
       fire, the guard's `deny`/`ask` decisions are honoured and displayed as expected. Only a headless listing of
       skill names was observed.
@@ -85,18 +85,17 @@ Derived from the repository's current state. Unchecked means not done or not ver
 
 ### Known issues to fix or document before release
 
-- [ ] `rescue inspect` over-redacts the `stat` field (`Author:`/`AuthorDate:` values become `[REDACTED]`).
-- [ ] The guard allows `git checkout -- <file>` and `git restore <file>` (single-file discards), and allowed
-      `$GIT reset --hard` in a test run. Decide whether that is acceptable and say so in the listing.
+- [ ] The guard allows single-file discards (`git checkout -- <file>`, `git restore <file>`, `git rm -f <file>`),
+      `git fetch -f`/`git pull -f`, and computed forms such as `git reset $(echo --hard)`. Decide whether that is
+      acceptable and say so in the listing. Other limits to disclose: a repo-controlled `.claude/git-warp.local.md`
+      can narrow `protected_branches`; agents declare unrestricted `Bash`; hook timeouts fail open.
 - [ ] `planning/ARCHITECTURE.md` and `planning/STATUS.md` are out of date with the code (see
       [architecture.md](architecture.md)).
-- [ ] Skill/code discrepancies found while writing docs are listed in the documentation hand-off report. The skills
-      were also being edited (uncommitted `allowed-tools` changes) while these docs were written, so re-check them
-      against the CLI before release. One item observed: `skills/git-commits` tells Claude it may run
-      `git add`/`git commit` when the user asks, but its `allowed-tools` does not list them, so those calls would go
-      through normal permission prompts.
-- [ ] Verify that `${CLAUDE_PLUGIN_ROOT}` inside `SKILL.md` command lines is expanded by Claude Code in a live
-      session (the hooks use it in `hooks/hooks.json`; the skills rely on it too and this was not observed).
+- [ ] `skills/git-commits` tells Claude it may run `git add`/`git commit` when the user asks, but its `allowed-tools`
+      does not list them, so those calls would go through normal permission prompts (intended or not, decide).
+- [ ] Verify in a live session that `${CLAUDE_PLUGIN_ROOT}` inside `SKILL.md` command lines is expanded and that the
+      narrowed `allowed-tools` prefix (`Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*)`) actually matches.
+      Not observed; if it does not match it fails closed to a permission prompt.
 - [ ] Security review of the hook scripts and redaction by someone other than the author.
 
 ### Listing content

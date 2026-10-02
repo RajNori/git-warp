@@ -73,7 +73,7 @@ Captured output (trimmed):
   "commit": { "sha": "55158fbb8dee8d9ed21ddfc93e1ffc1ddcce448c", "short": "55158fbb", "date": "2026-08-12T10:00:00+10:00", "author": "Ada Dev", "subject": "feat: experimental search over slugs", "...": "parents, body, author_date" },
   "files": ["src/search.py"],
   "files_total": 1,
-  "stat": "commit 55158fbb8dee8d9ed21ddfc93e1ffc1ddcce448c\nAuthor:     [REDACTED] Dev <ada@example.com>\nAuthorDate: [REDACTED] Aug 12 10:00:00 2026 +1000\nCommit:     Ada Dev <ada@example.com>\nCommitDate: Wed Aug 12 10:00:00 2026 +1000\n\n    feat: experimental search over slugs\n\n src/search.py | 5 +++++\n 1 file changed, 5 insertions(+)\n",
+  "stat": "commit 55158fbb8dee8d9ed21ddfc93e1ffc1ddcce448c\nAuthor:     Ada Dev <ada@example.com>\nAuthorDate: Wed Aug 12 10:00:00 2026 +1000\nCommit:     Ada Dev <ada@example.com>\nCommitDate: Wed Aug 12 10:00:00 2026 +1000\n\n    feat: experimental search over slugs\n\n src/search.py | 5 +++++\n 1 file changed, 5 insertions(+)\n",
   "reachable_from": [],
   "unreachable": true,
   "ancestry_vs_head": {
@@ -91,9 +91,8 @@ Captured output (trimmed):
 }
 ```
 
-Known quirk visible above: in the `stat` string the redactor replaced the word after `Author:` and `AuthorDate:` with
-`[REDACTED]`. That is an over-redaction (the key-name pattern matches `auth`); the structured `commit` object is
-unaffected.
+Re-captured after the redaction hardening (commit `64e23a0`): the `Author:` and `AuthorDate:` lines in `stat` are
+readable. (An earlier capture showed `[REDACTED]` there; that bug is fixed.)
 
 ## 3. `rescue preserve --dry-run` (changes nothing)
 

@@ -263,13 +263,24 @@ noted). `deny` blocks the command; `ask` prompts the user; everything not listed
 | deny | `git push --mirror` | `push-mirror` |
 | deny | `git push --delete` of a protected branch | `push-delete-protected` |
 | deny | `git filter-branch`, `git filter-repo` | `history-tool` |
-| deny | `rm -rf .git` | `rm-git` |
+| deny | `git read-tree --reset -u ...` | `read-tree-reset` |
+| deny | `git rm -rf .` (whole-tree `git rm` with force) | `rm-tree` |
+| deny | `git checkout-index -f -a` | `checkout-discard-all` |
+| deny | `rm -rf` of any path ending in `.git` (so `rm -rf foo.git` is a known false positive) | `rm-git` |
+| deny | the same destructive Git forms reached through variables or unknown launchers, e.g. `$GIT reset --hard`, `GIT=git; $GIT reset --hard`, `git reset --hard$IFS`, `arch git reset --hard`, `flock x git clean -fd` (literal `git` word in the tail of an unknown launcher is classified) | `reset-hard`, `clean-force`, ... |
 | ask | `git push --force` / `-f` / `--force-with-lease` to a non-protected branch | `push-force` |
 | ask | `git push --delete <non-protected>` | `push-delete` |
 | ask | `git rebase ...` | `rebase` |
 | ask | `git commit --amend` | `commit-amend` |
 | ask | `git branch -D <b>` | `branch-force-delete` |
-| ask | `git branch -f ...` / `-M` | `branch-force-move` |
+| ask | `git branch -f ...` / `-M`; `git checkout -B` / `git switch -C` onto a protected or dynamic (`$X`) target | `branch-force-move` |
+| ask | `git update-ref --stdin` | `update-ref-stdin` |
+| ask | `git push --prune` | `push-prune` |
+| ask | `git read-tree --reset` (without `-u`) | `read-tree-reset-index` |
+| ask | `git rm -r .` (whole-tree, no force) | `rm-tree-ask` |
+| ask | `git checkout-index -f <path>` | `checkout-index-force` |
+| ask | interpreter `-c`/`-e` strings containing a destructive git phrase (`python3 -c "... git reset --hard ..."`) | `interpreter-git` |
+| ask | an option word with a dynamic suffix on a destructive-capable subcommand when the literal part does not already prove it destructive | `option-unresolved` |
 | ask | `git reset <rev>` (non-hard) while on a protected branch | `reset-protected` |
 | ask | `git update-ref <protected ref> ...` | `update-ref-protected` |
 | ask | `git stash drop` | `stash-drop` |
@@ -286,9 +297,11 @@ With `safety_mode: strict`, these `ask` rules become `deny`: `rebase`, `commit-a
 `branch-force-move`, `push-force`, `push-delete`, `reset-protected`, `update-ref-protected`. The `deny` rules do not
 depend on the mode.
 
-Things the guard allows that you might expect it to stop (observed, see [Limitations](#limitations)):
-`git checkout -- <one file>`, `git restore <one file>` (discarding one named file's edits), and `git reset <rev>`
-or `git reset --soft` off a protected branch.
+Things the guard allows that you might expect it to stop (each verified with `guard check`, see
+[Limitations](#limitations)): `git checkout -- <one file>`, `git restore <one file>` (discarding one named file's
+edits), `git rm -f <one file>`, `git fetch -f`, `git pull -f`, `git checkout -B topic` (non-protected literal
+target), `git reset <rev>` or `git reset --soft` off a protected branch, and computed forms such as
+`git reset $(echo --hard)` and `cmd="git reset --hard"; $cmd`.
 
 Each `deny`/`ask` message includes safer alternatives (for example `git branch rescue/pre-reset`, `git stash push -u`,
 `git clean -n`). More: [docs/safety-model.md](docs/safety-model.md) and
@@ -308,8 +321,9 @@ worktrees, never in the work tree, never committed):
 Never stored by Git Warp: file contents, edit strings, prompts, tool output, environment variables, or the
 Git config. Redaction (`core/redact.py`) is applied to recorded commands; it is pattern based and can miss
 unusual secret formats. The index does contain commit author names and emails and commit subjects, because those
-are what it indexes. To remove everything: `python3 scripts/warp.py memory forget --yes`, or delete the directory
-yourself. Full details: [docs/privacy.md](docs/privacy.md).
+are what it indexes. To delete the index and recorder: `python3 scripts/warp.py memory forget --yes` (removes
+`warp.db` and its sidecar files and `flight-recorder.jsonl`/`.1`; `state.json` and the `.git/git-warp/` directory
+remain, delete them by hand if you want them gone). Full details: [docs/privacy.md](docs/privacy.md).
 
 ## Architecture overview
 
@@ -352,9 +366,9 @@ destructive operation. Details: [docs/architecture.md](docs/architecture.md) and
 python3 -m pytest tests -q
 ```
 
-`pytest` is not bundled; install it yourself. At the recovery checkpoint (commit `da94148`) the suite reported
-**1070 passed, 1 warning** (a `SyntaxWarning` in a test string literal). That number was reported to the
-documentation author and was not re-run while writing these docs. The suite includes unit, integration (real
+`pytest` is not bundled; install it yourself. The current suite is reported to be **1345 passed** (the figure
+supplied to the documentation author by the project lead; it was not re-run while writing these docs). The recovery
+checkpoint (commit `da94148`) had 1070 passed, 1 warning. The suite includes unit, integration (real
 temporary repositories and the hook scripts through subprocess), security (guard bypass attempts) and
 architecture-invariant tests. Use `PYTHONDONTWRITEBYTECODE=1` if you want to avoid `__pycache__` directories.
 
@@ -372,19 +386,23 @@ Short version (full list in [docs/troubleshooting.md](docs/troubleshooting.md)):
 ## Limitations
 
 - **The guard is a safety net, not a sandbox.** It only inspects the command string of the `Bash` tool. It cannot see
-  inside scripts (`./cleanup.sh`, `make clean`), variable expansion (`$GIT reset --hard` was *allowed* in a test run),
-  computed `eval`, `curl ... | sh`, aliases defined in your global Git config (`git nuke`), `docker exec`/`ssh`
-  wrappers, other tools (Write/Edit, MCP, IDE actions), or non-Git destruction other than `rm -rf .git`.
+  inside scripts (`./cleanup.sh`, `make clean`), arbitrary computed values (`git reset $(echo --hard)` and `cmd="git reset --hard"; $cmd` were *allowed* in test
+  runs, although simple forms such as `$GIT reset --hard` are now denied), computed `eval`, `curl ... | sh`,
+  aliases defined in your global Git config (`git nuke`), `docker exec`/`ssh` wrappers, other tools (Write/Edit,
+  MCP, IDE actions), or non-Git destruction other than `rm -rf` of a `.git` path.
   Full list: [docs/guard-limitations.md](docs/guard-limitations.md).
-- Single-file discards (`git checkout -- file`, `git restore file`) and non-hard resets off protected branches are
-  allowed.
+- Single-file discards (`git checkout -- file`, `git restore file`, `git rm -f file`), `git fetch -f`,
+  `git pull -f` and non-hard resets off protected branches are allowed.
+- `.claude/git-warp.local.md` lives in the working tree, so a repository can narrow `protected_branches`; the
+  unconditional `deny` rules do not depend on it. `core.fsmonitor`, `core.hooksPath` and repository hooks are not
+  inspected.
+- The three agents declare an unrestricted `Bash` tool; their "read-only" behaviour is stated in their prompts
+  only. Skills pre-approve `git diff/log/show`, and `--output=<file>` on those can overwrite a file (not flagged).
 - Analyses are heuristic where they say so (clusters, "sensitive" path words such as `billing` or `auth`, missing
   tests, dependency drift, fix-like messages, co-change, hotspots). Risk levels are rule outcomes, not probabilities.
 - Shallow clones give truncated history; commands report this in `warnings`.
 - Rescue cannot recover edits that were never committed or staged, and cannot see objects already removed by
   `git gc`/`prune`.
-- `rescue inspect` includes a `stat` string that is passed through the redactor; in a captured run the redactor
-  replaced the word after `Author:` and `AuthorDate:` with `[REDACTED]` (an over-redaction, safe but lossy).
 - Blast radius covers Python and JS/TS imports plus a generic text fallback; dynamic imports and cross-repo
   consumers are invisible.
 - Only tested on macOS with Python 3.13 and git 2.53. Windows is untested.
@@ -405,7 +423,7 @@ Short version (full list in [docs/troubleshooting.md](docs/troubleshooting.md)):
 - [CHANGELOG.md](CHANGELOG.md)
 
 Project history: the implementation was recovered from session evidence at commit `da94148` and verified
-(1070 tests passing at that checkpoint); this documentation was written afterwards, as new work, from the code
+(1070 tests passing at that checkpoint; 1345 now); this documentation was written afterwards, as new work, from the code
 and from real runs.
 
 ## License

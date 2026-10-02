@@ -8,7 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 The implementation in this repository was **recovered from session evidence** and committed as the recovery
 checkpoint `da94148` ("recovery: reconstruct Git Warp implementation from Claude session evidence"). At that
-checkpoint the test suite reported 1070 passed (see `planning/POST_RESTORE_VALIDATION.md`). The documentation
+checkpoint the test suite reported 1070 passed (see `planning/POST_RESTORE_VALIDATION.md`); it is reported at 1345
+passed now. The documentation
 (README, `docs/`, `examples/`, this changelog) was **written afterwards, as new work**, from the code and from real
 runs; it is not part of the recovered material. Everything under "Unreleased" below happened after the checkpoint.
 
@@ -38,12 +39,43 @@ runs; it is not part of the recovered material. Everything under "Unreleased" be
 - Secret redaction no longer has a quadratic worst case: the identifier prefix is bounded and redaction input is
   capped at 8000 characters, so a very long command cannot push the guard hook past its timeout (commit `351ef9f`,
   with regression tests).
+- `rescue inspect` no longer redacts the words after `Author:`/`AuthorDate:` (commit `64e23a0`).
+
+### Security
+- Guard bypass fixes from a security review (commit `3a3a1b6`): dynamic option suffixes and command heads
+  (`$GIT reset --hard`, `git reset --hard$IFS` now denied), piped `echo`/`printf` into shells, a generic
+  literal-`git` fallback for unknown launchers (`arch git ...`), interpreter `-c`/`-e` strings, `submodule foreach`,
+  `rebase --exec`, `bisect run`, `checkout-index`, `read-tree --reset`, whole-tree `git rm`,
+  `update-ref --delete`/`--stdin`, `push --prune`, `gc` expire config, and whole-tree pathspec spellings. Git
+  lookups in the guard use a 2-second timeout and the hook answers `ask` at a 6-second internal deadline instead of
+  being killed by the host's 10-second timeout (a host kill still fails open). Adds `tests/unit/test_guard_hardening.py`
+  and `tests/unit/test_guard_hook_deadline.py`.
+- Redaction and injected-context hardening (commit `64e23a0`): new credential patterns (`curl -u`, `Cookie`,
+  `aws_secret_access_key`, provider token prefixes and others), invisible/bidirectional/tag Unicode stripped from
+  repository text injected into the conversation, the safety policy placed above untrusted data in the
+  SessionStart context, and truncation before redaction everywhere. Adds
+  `tests/security/test_hardening_redact_context.py`.
+- Skill permissions narrowed (commit `7bd953f`): `allowed-tools` now pre-approves only the `warp.py` entry point
+  (`Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*)`) instead of `Bash(python3:*)`; `Write` and the
+  `~/bin` suggestion removed from `git-bisect-ai`; `git branch:*` and `git reflog:*` replaced with read-only forms.
+  Live prefix matching with `${CLAUDE_PLUGIN_ROOT}` has **not** been verified; if it does not match, it fails closed
+  to a permission prompt.
+
+### Tests
+- The suite is reported at 1345 passed (the recovery checkpoint `da94148` had 1070). Not re-run by the
+  documentation author.
 
 ### Known issues
-- `rescue inspect` over-redacts the word after `Author:`/`AuthorDate:` in its `stat` string (observed while
-  writing the docs; not fixed).
-- The guard allows single-file discards (`git checkout -- <file>`, `git restore <file>`). See
-  `docs/safety-model.md` and `docs/guard-limitations.md`.
+- The guard allows single-file discards (`git checkout -- <file>`, `git restore <file>`, `git rm -f <file>`),
+  `git fetch -f`/`git pull -f`, `checkout -B` onto a non-protected literal branch, and computed commands such as
+  `git reset $(echo --hard)` and `cmd="git reset --hard"; $cmd`. See `docs/safety-model.md` and
+  `docs/guard-limitations.md`.
+- `rm -rf foo.git` is denied (any path ending in `.git`): a known false positive.
+- A repository-controlled `.claude/git-warp.local.md` can narrow `protected_branches`; `core.fsmonitor`,
+  `core.hooksPath` and repository hooks are not inspected; `--output=<file>` on `git diff/log/show` is pre-approved by
+  the skills and not flagged.
+- The three agents declare an unrestricted `Bash` tool; their read-only behaviour is prose only.
+- Hook timeouts fail open if the host kills the hook.
 
 ## [0.1.0] - Unreleased
 

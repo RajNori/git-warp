@@ -58,9 +58,9 @@ JSON keys with secret-like names have their string values replaced.
 Redaction input is capped at 8000 characters per string (anything beyond is replaced by a truncation marker, never
 passed through unredacted; added in commit `351ef9f` to keep hooks inside their timeouts).
 
-Redaction is pattern-based. It will miss secrets in unusual formats and can over-redact. Observed over-redaction:
-`rescue inspect` returns a `stat` string where `Author:` and `AuthorDate:` lines had the following word replaced
-with `[REDACTED]` (the key-name pattern matches `auth`). Do not rely on redaction as your only protection when you
+Redaction is pattern-based. It will miss secrets in unusual formats and can over-redact. (An earlier over-redaction of
+`Author:`/`AuthorDate:` lines in `rescue inspect` output was fixed in commit `64e23a0`; those fields are readable now.)
+Do not rely on redaction as your only protection when you
 type secrets into commands.
 
 ## The history index (`warp.db`)

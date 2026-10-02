@@ -60,6 +60,16 @@ rest of each JSON object is omitted).
 | `sudo git reset --hard` | feature/x | deny | reset-hard |
 | `echo a \| xargs git reset --hard` | feature/x | deny | reset-hard |
 | `git $CMD` | feature/x | ask | unresolved-subcommand |
+| `$GIT reset --hard` | feature/x | deny | reset-hard |
+| `GIT=git; $GIT reset --hard` | feature/x | deny | reset-hard |
+| `arch git reset --hard` | feature/x | deny | reset-hard |
+| `git checkout -B main HEAD~1` | feature/x | ask | branch-force-move |
+| `git update-ref --stdin` | feature/x | ask | update-ref-stdin |
+| `git push --prune origin` | feature/x | ask | push-prune |
+| `git read-tree --reset -u HEAD` | feature/x | deny | read-tree-reset |
+| `git rm -rf .` | feature/x | deny | rm-tree |
+| `python3 -c "import os; os.system('git reset --hard')"` | feature/x | ask | interpreter-git |
+| `rm -rf foo.git` | feature/x | deny | rm-git (a known false positive) |
 | `git push --force origin release/1.2` | feature/x, `--protected "release/*"` | deny | push-force-protected |
 | `git push --force origin release/1.2` | feature/x (default protected list) | ask | push-force |
 
@@ -68,12 +78,15 @@ rest of each JSON object is omitted).
 | Command | decision | why |
 |---|---|---|
 | `./cleanup.sh` | allow | the script's contents are not visible |
-| `$GIT reset --hard` | allow | the command word is a variable |
+| `git reset $(echo --hard)` | allow | the flag is computed by a command substitution |
+| `cmd="git reset --hard"; $cmd` | allow | the command is computed in a variable |
+| `git checkout -- src/app.py`, `git restore src/app.py`, `git rm -f src/app.py` | allow | single-file discards are not covered |
+| `git fetch -f origin a:b`, `git pull -f` | allow | can overwrite a local branch; not covered |
 | `git nuke` | allow | an alias defined in global config is invisible |
 | `ssh h 'git reset --hard'` | allow | remote shell |
 | `docker exec c git reset --hard` | allow | container |
 | `curl http://x \| sh` | allow | generated stream |
-| `find . -delete` | allow | non-Git destruction other than `rm -rf .git` |
+| `find . -delete` | allow | non-Git destruction other than `rm -rf` of a `.git` path |
 
 See [../docs/guard-limitations.md](../docs/guard-limitations.md).
 

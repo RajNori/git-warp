@@ -45,7 +45,11 @@ Verified with `python3 scripts/warp.py guard check "<cmd>" --branch feature/x` u
 | `push-mirror` | `git push --mirror` |
 | `push-delete-protected` | `git push --delete origin main`, `git push origin :main` |
 | `history-tool` | `git filter-branch`, `git filter-repo` |
-| `rm-git` | `rm -rf .git` (a path ending in `.git`) |
+| `rm-git` | `rm -rf .git`; any `rm -rf` of a path ending in `.git` (so `rm -rf foo.git` is a known false positive) |
+| `read-tree-reset` | `git read-tree --reset -u HEAD` |
+| `rm-tree` | `git rm -rf .` (whole tree, forced) |
+| `checkout-discard-all` | also `git checkout-index -f -a` |
+| (same rules as above) | variable or launcher forms that still expose a literal destructive command: `$GIT reset --hard`, `GIT=git; $GIT reset --hard`, `git reset --hard$IFS`, `arch git reset --hard`, `flock x git clean -fd` |
 
 ### ask
 
@@ -68,6 +72,14 @@ Verified with `python3 scripts/warp.py guard check "<cmd>" --branch feature/x` u
 | `remote-modify` | `git remote set-url`, `git remote remove` |
 | `unresolved-subcommand`, `unresolved-command` | `git $CMD ...`; a command word built from a variable on a line that mentions git |
 | `reset-unresolved`, `clean-unresolved` | `git reset $MODE`, `git clean $FLAGS` |
+| `option-unresolved` | an option word with a dynamic suffix on a destructive-capable subcommand, when the literal part does not already prove it destructive |
+| `branch-force-move` | also `git checkout -B main HEAD~1`, `git switch -C main`, `git checkout -B $X` (protected or dynamic target) |
+| `update-ref-stdin` | `git update-ref --stdin` |
+| `push-prune` | `git push --prune origin` |
+| `read-tree-reset-index` | `git read-tree --reset HEAD` (no `-u`) |
+| `rm-tree-ask` | `git rm -r .` |
+| `checkout-index-force` | `git checkout-index -f <path>` |
+| `interpreter-git` | `python3 -c "import os; os.system('git reset --hard')"` (interpreter string containing a destructive git phrase) |
 | `eval-git`, `shell-git` | `eval "$X"` / `bash -c "$X"` where the computed text mentions git |
 | `too-complex` | over 20,000 characters, nesting beyond the parser limit or step budget, and it mentions git |
 
@@ -81,6 +93,9 @@ Verified with `python3 scripts/warp.py guard check "<cmd>" --branch feature/x` u
 
 - `git checkout -- src/app.py` and `git restore src/app.py` (one named file's uncommitted edits are discarded).
   Only whole-tree forms (`.`, `*`, `:/`, `..`) are denied.
+- `git rm -f <one file>`, `git fetch -f`, `git pull -f`, and `git checkout -B topic` onto a non-protected literal branch.
+- Computed commands the guard cannot resolve: `git reset $(echo --hard)` and `cmd="git reset --hard"; $cmd` were both
+  `allow` in a real `guard check` run.
 - `git reset --soft` and `git reset <rev>` on non-protected branches.
 - `git clean -n` (dry run) is correctly allowed; `git clean -f` is denied.
 
@@ -104,6 +119,9 @@ modes. You can try a mode without a config file: `guard check "..." --mode stric
 - Guard internal error: a command that mentions `git` yields `ask` with "Git Warp guard error — verify manually";
   a command that does not mention git is allowed.
 - Malformed hook input: no-op (`{}`).
+- The guard has an internal 6-second deadline and answers `ask` ("Git Warp guard timed out") before the host's 10-second
+  hook timeout. If the host kills the hook anyway, Claude Code proceeds without the guard (hook timeouts fail open).
+  See [guard-limitations.md](guard-limitations.md).
 - Input over 20,000 characters or too deeply nested: `ask` if it mentions git (`too-complex`), otherwise not
   analysed.
 
@@ -111,8 +129,8 @@ modes. You can try a mode without a config file: `guard check "..." --mode stric
 
 Scripts, variable expansion, computed `eval`, `curl | sh`, global-config aliases, `GIT_DIR`-style environment
 tricks, `ssh`/`docker exec` wrappers, other tools (Write/Edit, MCP, IDE), non-Git deletion other than
-`rm -rf .git`. Two examples observed while writing this page: `$GIT reset --hard` and `./cleanup.sh` were both
-`allow`. See [guard-limitations.md](guard-limitations.md).
+`rm -rf` of a `.git` path. Examples observed while writing this page that were `allow`: `./cleanup.sh`,
+`git reset $(echo --hard)` and `cmd="git reset --hard"; $cmd`. (`$GIT reset --hard` is now `deny`.) See [guard-limitations.md](guard-limitations.md).
 
 ## Other safety properties of the plugin
 

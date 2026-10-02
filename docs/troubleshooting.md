@@ -84,9 +84,6 @@ Check other clones, CI artifacts, editor history or the remote.
 **A candidate says `low` confidence.** Labels come with `confidence_reasons`; in the example run a dangling commit
 with no reflog entry was `low` because the only evidence was `git fsck` output. Inspect before preserving.
 
-**`rescue inspect` shows `[REDACTED]` where an author name should be.** Known over-redaction in the `stat` field
-([privacy.md](privacy.md)). The structured `commit` object has the real values.
-
 ## Hooks
 
 **No SessionStart context / no Stop report.** Both are silent outside Git repositories. The Stop report appears
@@ -97,8 +94,8 @@ Check with `warp.py memory status` (`recorder.exists`, `enabled.recorder`).
 
 ## Tests
 
-`python3 -m pytest tests -q` needs `pytest` installed. At the recovery checkpoint the suite reported 1070 passed,
-1 warning. The warning is a `SyntaxWarning: invalid escape sequence '\;'` in a test string
+`python3 -m pytest tests -q` needs `pytest` installed. The current suite is reported to be 1345 passed (supplied by the
+project lead; not re-run by the documentation author). The recovery checkpoint had 1070 passed, 1 warning, and the warning was a `SyntaxWarning: invalid escape sequence '\;'` in a test string
 (`tests/unit/test_guard_branches.py`), recorded in [../planning/POST_RESTORE_VALIDATION.md](../planning/POST_RESTORE_VALIDATION.md).
 
 ## Still stuck
