@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 REDACTED = "[REDACTED]"
+MAX_REDACT_CHARS = 8000   # hooks have hard timeouts; text beyond this is dropped (never passed through unredacted)
 
 _PATTERNS = [
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S),
@@ -21,7 +22,7 @@ _PATTERNS = [
 ]
 # KEY=value / key: value where the key name looks secret-ish
 _ASSIGN = re.compile(
-    r"(?i)\b([A-Za-z0-9_.-]*(?:secret|token|passw(?:or)?d|passwd|pwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential|auth)[A-Za-z0-9_.-]*)"
+    r"(?i)\b([A-Za-z0-9_.-]{0,64}(?:secret|token|passw(?:or)?d|passwd|pwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential|auth)[A-Za-z0-9_.-]{0,64})"
     r"(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;&|]+)"
 )
 _FLAG = re.compile(r"(?i)(--?(?:password|passwd|token|secret|api-?key|auth)[= ])(\S+)")
@@ -31,6 +32,8 @@ def redact(text: str) -> str:
     """Replace probable secrets in ``text`` with ``[REDACTED]``."""
     if not text:
         return text
+    if len(text) > MAX_REDACT_CHARS:
+        text = text[:MAX_REDACT_CHARS] + f"…[+{len(text) - MAX_REDACT_CHARS} chars truncated]"
     out = _PATTERNS[0].sub(REDACTED, text)
     out = _PATTERNS[1].sub(lambda m: m.group(1) + ": " + REDACTED, out)
     for pat in _PATTERNS[2:11]:

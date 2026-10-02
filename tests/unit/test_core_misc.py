@@ -73,3 +73,18 @@ def test_missing_cwd_is_not_a_repo(tmp_path):
     from gitwarp.core import git
     with pytest.raises(git.NotARepository):
         git.run(["status"], cwd=tmp_path / "nope")
+
+
+def test_redact_is_linear_on_pathological_input():
+    import time
+    for s in ("git reset --hard " + "a-" * 50000, "x" * 200000, "token=" + "a" * 100000, "A" * 100000 + "secret"):
+        t = time.time()
+        out = redact(s)
+        assert time.time() - t < 1.0
+        assert len(out) < 9000
+    assert "chars truncated" in redact("y" * 20000)
+
+
+def test_redact_still_catches_secrets_after_prefix_bound():
+    assert "hunter2" not in redact("MY_DB_PASSWORD=hunter2")
+    assert "abc" not in redact("some.long-prefix_api_key: abc")
