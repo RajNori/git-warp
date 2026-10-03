@@ -1,18 +1,32 @@
-from _common import *
-root=repo_root()
-if not root: raise SystemExit
-def g(a):
-    rc,out,_=run_git(a,cwd=root,timeout=8); return out if rc==0 else ""
-status=g(["status","--short"]); diffstat=g(["diff","--stat"]); staged=g(["diff","--cached","--stat"]); branch=g(["branch","--show-current"]) or "(detached HEAD)"
-changed=len(status.splitlines()) if status else 0; risk='LOW' if changed<15 else ('MEDIUM' if changed<40 else 'HIGH')
-sensitive=[]
-for line in status.splitlines():
-    p=line[3:] if len(line)>3 else line; low=p.lower()
-    if any(k in low for k in ['migration','schema','auth','permission','payment','billing','terraform','cloudformation','docker','deploy','.github/workflows','package-lock','pnpm-lock','yarn.lock']): sensitive.append(p)
-if sensitive and risk=='LOW': risk='MEDIUM'
-parts=['Git Warp end-of-turn report',f'- Branch: {branch}',f'- Changed paths: {changed}',f'- Change risk heuristic: {risk}']
-if sensitive: parts.append('- Sensitive/high-blast-radius paths: '+', '.join(sensitive[:12]))
-if diffstat: parts.append('Working tree diffstat:\n'+diffstat)
-if staged: parts.append('Staged diffstat:\n'+staged)
-parts.append('Recommendation: keep commits atomic; inspect git diff before committing and run tests appropriate to the changed surface.' if changed else 'Working tree is clean.')
-print('\n'.join(parts))
+#!/usr/bin/env python3
+"""Claude Code Stop entry point; emits a bounded status summary."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from git_warp.hooks.common import event_cwd, read_event, write_json  # noqa: E402
+from git_warp.hooks.stop import end_report  # noqa: E402
+from git_warp.models import GitError  # noqa: E402
+
+
+def main() -> int:
+    event = read_event()
+    if event is None:
+        return 0
+    cwd = event_cwd(event) or str(Path.cwd())
+    try:
+        report = end_report(cwd)
+    except (GitError, OSError, RuntimeError, ValueError):
+        return 0
+    # systemMessage is visible to the user without feeding back into Claude's
+    # context or causing a Stop-hook continuation loop.
+    write_json({"systemMessage": report} if report else {})
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

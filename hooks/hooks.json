@@ -1,5 +1,5 @@
 {
-  "description": "Git Warp lifecycle hooks: inject repository state, block dangerous Git operations, track change risk, and produce an end-of-turn Git health report.",
+  "description": "Git Warp lifecycle hooks: add repository context, classify risky Git commands, record minimal change metadata, and notify about a dirty working tree.",
   "hooks": {
     "SessionStart": [
       {
