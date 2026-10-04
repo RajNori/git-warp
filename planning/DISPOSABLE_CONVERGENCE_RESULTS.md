@@ -2,9 +2,9 @@
 
 The unchanged Disposable corpus, run against `warp/convergence`, compared with the two frozen candidates.
 
-- Convergence candidate: `warp/convergence` @ `5edaeef0f246ae32ee9249072fd986348cdd5f1b`
+- Convergence candidate: `warp/convergence` @ `1753007c7edb4e4006f1b5c286ffe1f8b59e61c9`
 - Phoenix `warp/phoenix` @ `d909d6d4f739a7f33dcb543f4bea6b383f244a98`; Rebirth `warp/rebirth` @ `3d4a5aca98b14810dc785b75c6bfb09d4baaf663`
-- Harness `RajNori/Disposable` branch `bakeoff-harness`, HEAD `3af61aedbc7b1e53d1aa84fc5e585658fc6ea7be` (local branch; the Disposable repository itself is not part of this release)
+- Harness `RajNori/Disposable` branch `bakeoff-harness`, HEAD `06ffa6703eb4c19c73e49dcb5b015924c8b170d3` (local branch; the Disposable repository itself is not part of this release)
 - Darwin 25.6.0 (26.6.2); Python 3.13.2; git version 2.53.0; Claude Code 2.1.285 (Claude Code)
 
 ## Totals
@@ -14,8 +14,8 @@ The unchanged Disposable corpus, run against `warp/convergence`, compared with t
 | PASS | 277 | 269 | 291 |
 | FAIL | 13 | 10 | 0 |
 | BLOCK | 62 | 34 | 67 |
-| ASK | 28 | 46 | 42 |
-| ALLOW | 72 | 82 | 53 |
+| ASK | 28 | 46 | 47 |
+| ALLOW | 72 | 82 | 48 |
 | ERROR | 1 | 1 | 0 |
 | TIMEOUT | 0 | 0 | 0 |
 | UNSUPPORTED | 1 | 3 | 1 |
@@ -116,3 +116,10 @@ _none_
 
 Cases with `mutated_repo`: 0.
 
+
+## Run integrity note
+
+This run's `integrity unchanged` flag was **False**, for one reason only: the watched Git Warp checkout's `HEAD` moved from `1753007` to `64a3bbf`
+because a documentation-only commit was made in it while the harness was running. The four candidate clones
+(`phoenix`, `rebirth`, `gwmain`, `convergence`, the last at `1753007c7edb4e4006f1b5c286ffe1f8b59e61c9`) and the remote refs of
+`RajNori/git-warp` were unchanged (see `results/raw/integrity.json`, `before` vs `after`). No candidate was modified by the harness.
