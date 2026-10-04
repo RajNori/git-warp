@@ -6,7 +6,7 @@ import pytest
 from gitwarp.core.config import Config
 from gitwarp.safety.classifier import classify_command, is_all_pathspec
 
-SEV = {"allow": 0, "ask": 1, "deny": 2}
+SEV = {"defer": 0, "ask": 1, "deny": 2}
 
 
 def v(cmd, branch="feature/x", mode="standard"):
@@ -51,7 +51,7 @@ def test_dynamic_flag_on_destructive_subcommand_without_other_rule_asks():
     'git log --since="$D" --oneline',
 ])
 def test_dynamic_false_positives_stay_allowed(cmd):
-    assert v(cmd).decision == "allow", cmd
+    assert v(cmd).decision == "defer", cmd
 
 
 # ------------------------------------------------------------------ M2: echo / printf piped into a shell
@@ -72,7 +72,7 @@ def test_piped_echo_is_analysed(cmd, rule):
     "echo git reset --hard | grep reset", "echo hello | sh", "printf %s hello | bash", "echo -n | sh",
 ])
 def test_echo_not_piped_to_shell_stays_allowed(cmd):
-    assert v(cmd).decision == "allow", cmd
+    assert v(cmd).decision == "defer", cmd
 
 
 # ------------------------------------------------------------------ M4: extra destructive operations
@@ -86,7 +86,7 @@ def test_checkout_B_and_switch_C_on_protected_or_unknown_branch_ask():
 
 def test_checkout_B_on_ordinary_branch_name_stays_allowed():
     for cmd in ("git checkout -B x", "git checkout -B feature/new", "git switch -C topic", "git checkout -b topic"):
-        assert v(cmd).decision == "allow", cmd
+        assert v(cmd).decision == "defer", cmd
 
 
 @pytest.mark.parametrize("cmd,rule", [
@@ -127,7 +127,7 @@ def test_new_ask_rules(cmd, rule):
     "git -c core.pager=cat log", "git push --set-upstream origin x",
 ])
 def test_new_rule_false_positives_stay_allowed(cmd):
-    assert v(cmd).decision == "allow", cmd
+    assert v(cmd).decision == "defer", cmd
 
 
 @pytest.mark.parametrize("spec", [".", "./.", "././", ".//", "./", "./*", "a/..", "../", ".././..", ":/./", ":(top)./.", "*"])
@@ -163,7 +163,7 @@ def test_unknown_launchers_hide_nothing(cmd):
     "brew install git", "pip install gitpython", "gh pr create --title git --body x",
 ])
 def test_text_tools_and_benign_launchers_stay_allowed(cmd):
-    assert v(cmd).decision == "allow", cmd
+    assert v(cmd).decision == "defer", cmd
 
 
 @pytest.mark.parametrize("cmd", [
@@ -183,7 +183,7 @@ def test_interpreter_with_destructive_git_string_asks(cmd):
     "python3 -c \"import os; os.system('git log')\"", "python3 -m pytest tests", "ruby -e 'puts 1'",
 ])
 def test_interpreter_false_positives_stay_allowed(cmd):
-    assert v(cmd).decision == "allow", cmd
+    assert v(cmd).decision == "defer", cmd
 
 
 # ------------------------------------------------------------------ H1: pathological padding through the classifier

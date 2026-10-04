@@ -13,7 +13,7 @@ def run(cmd, branch="feature/x", cfg=None):
     t0 = time.monotonic()
     v = classify_command(cmd, cfg or Config(), branch)
     assert time.monotonic() - t0 < 3.0, "classification too slow"
-    assert v.decision in ("allow", "ask", "deny")
+    assert v.decision in ("defer", "ask", "deny")
     return v
 
 
@@ -23,7 +23,7 @@ def test_very_long_git_command_asks():
 
 
 def test_very_long_non_git_command_allowed():
-    assert run("echo " + "a" * 100000).decision == "allow"
+    assert run("echo " + "a" * 100000).decision == "defer"
 
 
 def test_just_under_limit_is_analysed():
@@ -86,7 +86,7 @@ def test_unbalanced_constructs_still_detect_destructive_git(cmd):
 def test_nul_bytes_do_not_hide_commands():
     assert run("git\x00reset --hard").decision == "deny"
     assert run("echo a\x00; git clean -fd").decision == "deny"
-    assert run("\x00" * 100).decision == "allow"
+    assert run("\x00" * 100).decision == "defer"
 
 
 @pytest.mark.parametrize("cmd", [
@@ -98,7 +98,7 @@ def test_nul_bytes_do_not_hide_commands():
     "\U0001f600 git status", "git commit -m '\U0001f600‮ reset --hard'",
 ])
 def test_unicode_lookalikes_do_not_crash_and_do_not_false_positive(cmd):
-    assert run(cmd).decision == "allow"
+    assert run(cmd).decision == "defer"
 
 
 def test_unicode_bidi_does_not_hide_real_command():
@@ -124,7 +124,7 @@ def test_escape_bomb():
 
 def test_non_string_input():
     for bad in (None, 5, [], b"git reset --hard"):
-        assert classify_command(bad, Config(), None).decision == "allow"  # type: ignore[arg-type]
+        assert classify_command(bad, Config(), None).decision == "defer"  # type: ignore[arg-type]
 
 
 def test_hostile_config_values_do_not_break_matching():

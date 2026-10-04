@@ -35,6 +35,8 @@ class Word:
     glob: bool = False     # unquoted glob / brace characters
     bare: bool = False     # exactly one plain variable expansion ($X, "${X}")
     quoted: bool = False   # any quoting/escaping was used
+    subs: List[List["Cmd"]] = field(default_factory=list)   # commands inside each ``$( )`` / backtick in this word
+    varexp: int = 0        # number of non-command-substitution expansions (``$X``, ``${X:-y}``)
 
 
 @dataclass(eq=False)
@@ -42,6 +44,8 @@ class Cmd:
     words: List[Word] = field(default_factory=list)
     heredocs: List[str] = field(default_factory=list)
     herestrings: List[str] = field(default_factory=list)
+    redirs: List[str] = field(default_factory=list)       # output redirection targets (``> f``, ``>> f``, ``&> f``)
+    in_redirs: List[str] = field(default_factory=list)    # input redirection sources (``< f``)
     pipe_prev: Optional["Cmd"] = None
 
     def texts(self) -> List[str]:
@@ -56,13 +60,14 @@ class Budget:
 
 
 class _W:
-    __slots__ = ("buf", "dyn", "glob", "quoted", "n_exp", "lit", "cmdsub", "brace")
+    __slots__ = ("buf", "dyn", "glob", "quoted", "n_exp", "lit", "cmdsub", "brace", "subs")
 
     def __init__(self) -> None:
         self.buf: List[str] = []
         self.dyn = self.glob = self.quoted = self.cmdsub = self.brace = False
         self.n_exp = 0
         self.lit = False
+        self.subs: List[List[Cmd]] = []
 
     def add(self, text: str) -> None:
         self.buf.append(text)
@@ -72,7 +77,8 @@ class _W:
         text = "".join(self.buf)
         glob = self.glob or (self.brace and text not in ("{", "}") and len(text) > 1)
         bare = self.dyn and self.n_exp == 1 and not self.lit and not self.cmdsub
-        return Word(text, dyn=self.dyn, glob=glob, bare=bare, quoted=self.quoted)
+        return Word(text, dyn=self.dyn, glob=glob, bare=bare, quoted=self.quoted, subs=self.subs,
+                    varexp=self.n_exp - len(self.subs))
 
 
 _WS = " \t\r"
@@ -165,6 +171,7 @@ class Parser:
         body = body.replace("\\`", "`").replace("\\\\", "\\").replace("\\$", "$")
         cmds, _ = Parser(body, self.b).parse_seq(0, None, depth + 1)
         out.extend(cmds)
+        w.subs.append(cmds)
         w.dyn = True
         w.cmdsub = True
         w.n_exp += 1
@@ -177,6 +184,7 @@ class Parser:
         if nxt == "(":
             cmds, j = self.parse_seq(i + 2, ")", depth + 1)
             out.extend(cmds)
+            w.subs.append(cmds)
             w.dyn = w.cmdsub = True
             w.n_exp += 1
             w.buf.append("$(...)")
@@ -391,7 +399,7 @@ class Parser:
                 nxt = s[i + 1] if i + 1 < n else ""
                 if nxt == ">":
                     i += 3 if s.startswith("&>>", i) else 2
-                    mode = "skip"
+                    mode = "out"
                     continue
                 end_cmd()
                 i += 2 if nxt == "&" else 1
@@ -412,7 +420,7 @@ class Parser:
                 if nxt == "(":
                     cmds, i = self.parse_seq(i + 2, ")", depth + 1)
                     out.extend(cmds)
-                    cur.words.append(Word("<(...)", dyn=True))
+                    cur.words.append(Word("<(...)", dyn=True, subs=[cmds]))
                     continue
                 if s.startswith("<<<", i):
                     mode, i = "herestring", i + 3
@@ -420,11 +428,14 @@ class Parser:
                     mode, i, heredoc_strip = "heredoc", i + 3, True
                 elif s.startswith("<<", i):
                     mode, i, heredoc_strip = "heredoc", i + 2, False
-                elif s.startswith(">>", i) or s.startswith(">|", i) or s.startswith(">&", i) \
-                        or s.startswith("<&", i) or s.startswith("<>", i):
+                elif s.startswith(">>", i) or s.startswith(">|", i) or s.startswith(">&", i):
+                    mode, i = "out", i + 2
+                elif s.startswith("<&", i) or s.startswith("<>", i):
                     mode, i = "skip", i + 2
+                elif c == ">":
+                    mode, i = "out", i + 1
                 else:
-                    mode, i = "skip", i + 1
+                    mode, i = "in", i + 1
                 continue
             # an ordinary word
             w, i = self.read_word(i, depth, out)
@@ -433,6 +444,12 @@ class Parser:
             if i < n and s[i] in "<>" and w.text.isdigit() and not w.dyn and mode is None:
                 continue  # fd prefix such as 2>
             if mode == "skip":
+                mode = None
+            elif mode == "out":
+                cur.redirs.append(w.text)
+                mode = None
+            elif mode == "in":
+                cur.in_redirs.append(w.text)
                 mode = None
             elif mode == "herestring":
                 cur.herestrings.append(w.text)

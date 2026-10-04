@@ -1,13 +1,31 @@
 """Deterministic Git command classifier: ``classify_command(command, cfg, branch) -> Verdict``.
 
-Pure function: it tokenizes the command string (never runs it), finds every Git
-invocation (through wrappers, subshells, ``bash -c``, ``eval "literal"``,
-``xargs``, ``find -exec``, here-docs piped to a shell) and returns the MOST
-severe verdict.  See ``docs/guard-limitations.md`` for what it cannot see.
+This is the ONE Guardian decision API (the PreToolUse hook and ``warp.py guard check`` both call it).  It is a pure
+function: it tokenizes the command string (never runs it, never executes an expansion), finds every Git invocation
+(through wrappers, subshells, ``bash -c``, ``eval "literal"``, ``xargs``, ``find -exec``, here-docs piped to a shell)
+and returns the MOST severe verdict.  See ``docs/guard-limitations.md`` for what it cannot see.
 
-Decisions: ``deny`` (never allowed), ``ask`` (user must confirm) and ``allow``
-(silent).  In ``safety_mode: strict`` history-rewriting ``ask`` rules become
-``deny``.
+Canonical decisions
+-------------------
+``deny``   a clearly recognised prohibited destructive operation.
+``ask``    a risky-but-legitimate operation, or an ambiguous / dynamic construct the guard cannot read.
+``defer``  the command is confidently outside Guardian's scope, or confidently harmless by explicit rule.  It does NOT
+           mean "safe", "approved" or "allowed": it only means Guardian has no objection and ordinary Claude Code
+           permissions decide.  (The hook prints ``{}`` for it.)
+In ``safety_mode: strict`` history-rewriting ``ask`` rules become ``deny``.
+
+Fail-safe uncertainty rule (dynamic expressions)
+------------------------------------------------
+A dynamic word -- command substitution, backtick, parameter expansion, a variable used as executable or subcommand, a
+comma-brace expansion, a process substitution or a script generated and run in the same command -- must never produce a
+confident ``defer`` when it sits in an option-capable, subcommand or executable position of a destructive-capable Git
+subcommand (reset, clean, push, checkout, restore, branch, switch, stash, tag, rebase, worktree, update-ref, ...).
+Such constructs are ``ask`` (or ``deny`` when the literal part already proves destruction).  Dynamic words stay
+``defer`` in read-only Git commands (log, diff, show, status, rev-parse, merge-base, ls-files, ...) and in non-Git
+commands, and a substitution whose every command is a read-only Git command (or ``date``/``pwd``/``whoami``...) is
+treated as a harmless producer.  Plain ``$VAR`` operands stay ``defer`` unless the variable was assigned in the same
+command string a value that is option-like, mentions git, or is itself dynamic; assignments are tracked literally
+(a variable assigned exactly once with a static value is substituted, never evaluated).
 """
 from __future__ import annotations
 
@@ -24,13 +42,13 @@ from .tokenizer import Budget, Cmd, ShellParseError, Word, parse_script
 
 MAX_COMMAND_CHARS = 20_000
 MAX_SCRIPT_DEPTH = 12
-_RANK = {"allow": 0, "ask": 1, "deny": 2}
+_RANK = {"defer": 0, "ask": 1, "deny": 2}
 
 
 @dataclass
 class Verdict:
     decision: str                      # allow | ask | deny
-    rule: str = "allow"
+    rule: str = "defer"
     operation: str = ""
     reason: str = ""
     safer: List[str] = field(default_factory=list)
@@ -223,6 +241,18 @@ RULES = {
     "push-prune": ("ask", "git push --prune",
                    "`git push --prune` deletes remote branches that have no local counterpart.",
                    "Remote-only branches (other people's work) are removed.", ["git push <remote> <branch>  # push one branch"]),
+    "dynamic-argument": ("ask", "git <destructive> with a computed argument",
+                         "A destructive-capable Git command receives an argument produced by a command substitution or by a "
+                         "variable that was assigned an option-like or dynamic value.",
+                         "Git Warp does not run expansions, so it cannot tell whether the argument is a force/hard flag or a protected ref.",
+                         ["Spell out the Git flags and refs literally"]),
+    "generated-script": ("ask", "script generated then run in the same command",
+                         "A file is written and then executed (or sourced) in the same command line.",
+                         "Git Warp cannot verify what the generated script will do.",
+                         ["Write the script first, review it, then run it as a separate step"]),
+    "stdin-script": ("ask", "shell reading a computed script",
+                     "A shell is given a script through a process substitution, /dev/stdin or similar and the command mentions git.",
+                     "Git Warp cannot see the script text that will actually run.", ["Run the Git command directly so it can be reviewed"]),
     "env-alias": ("ask", "GIT_CONFIG alias via environment",
                   "An alias is injected through GIT_CONFIG_* environment variables.",
                   "Aliases can run arbitrary commands the guard cannot classify.", ["Run the real command spelled out"]),
@@ -284,7 +314,7 @@ def is_all_pathspec(t: str) -> bool:
 class Opts:
     """Generic short/long option splitter for one Git subcommand's argv."""
 
-    def __init__(self, words: List[Word], short_arg=frozenset(), long_arg=frozenset()):
+    def __init__(self, words: List[Word], short_arg=frozenset(), long_arg=frozenset(), ctx: "Optional[_Ctx]" = None):
         self.shorts: set = set()
         self.short_vals: dict = {}
         self.longs: dict = {}
@@ -300,6 +330,8 @@ class Opts:
             i += 1
             if w.dyn:
                 self.has_dyn = True
+                if ctx is not None and not seen_dd and t != "--":
+                    ctx.dyn_seen.append(w)      # dynamic word in an option-capable position (values of known options are consumed below)
                 if t.startswith("-") and not w.bare and not seen_dd:
                     self.dyn_flag = True
             if seen_dd:
@@ -359,6 +391,10 @@ class _Ctx:
         self.budget = Budget()
         self.strict = cfg.safety_mode == "strict"
         self.depth = 0                                # script nesting depth of the invocation being classified
+        self.mentions_git = False                     # the whole command string mentions git
+        self.vars: dict = {}                          # name -> [static value | _UNKNOWN | _TAINT, ...] assigned in this string
+        self.written: set = set()                     # files written by redirection / tee earlier in this string
+        self.dyn_seen: List[Word] = []                # dynamic option-position words seen by the current handler
 
     def protected(self, name: Optional[str]) -> bool:
         if not name:
@@ -377,6 +413,34 @@ class _Ctx:
     def ctx_strict(self) -> bool:
         return self.strict
 
+    # ---- variables assigned in this command string (tracked literally, never evaluated)
+    def record_var(self, name: str, w: Word, append: bool = False) -> None:
+        if not w.dyn:
+            st = w.text
+        elif w.subs and not all(_benign_cmds(c) for c in w.subs):
+            st = _TAINT
+        else:
+            src = _var_name(w)
+            st = self.var_state(src) if src else _UNKNOWN
+            if st is None:
+                st = _UNKNOWN
+        if append and name in self.vars:
+            prev = self.vars[name]
+            self.vars[name] = prev + [st]
+        else:
+            self.vars.setdefault(name, []).append(st)
+
+    def var_state(self, name: str):
+        """str (exactly one static assignment) | _TAINT | _UNKNOWN | None (never assigned here)."""
+        vals = self.vars.get(name)
+        if not vals:
+            return None
+        if len(vals) == 1:
+            return vals[0]
+        if any(v is _TAINT or (isinstance(v, str) and _val_risky(v)) for v in vals):
+            return _TAINT
+        return _UNKNOWN
+
 
 def _sub(text: str, fmt: dict) -> str:
     """Substitute {branch}/{tool}/{path} only (other braces, e.g. stash@{N}, stay literal)."""
@@ -385,6 +449,110 @@ def _sub(text: str, fmt: dict) -> str:
 
 def _joined(words: List[Word], limit: int = 12) -> str:
     return " ".join(w.text for w in words[:limit])
+
+
+
+# ------------------------------------------------------------------- dynamic-word analysis (never executes anything)
+_UNKNOWN = object()      # variable assigned something we cannot read, but not alarming (e.g. $(git rev-parse HEAD))
+_TAINT = object()        # variable assigned a computed value (non-benign substitution)
+READONLY_GIT = frozenset("""log show diff status rev-parse rev-list merge-base describe ls-files ls-tree cat-file for-each-ref
+show-ref name-rev shortlog blame grep ls-remote diff-tree diff-index diff-files whatchanged var count-objects""".split())
+BENIGN_PRODUCERS = frozenset({"date", "pwd", "whoami", "hostname", "uname", "id", "nproc", "arch"})
+PIPE_FILTERS = frozenset({"head", "tail", "wc", "sort", "uniq", "cut"})
+_VARNAME = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$")
+_PLAIN_VALUE = re.compile(r"^[^\s*?\[\]{}$`'\"\\;&|<>()~]*$")
+STDIN_PATHS = ("/dev/stdin", "-", "/proc/self/fd/0")
+
+
+def _benign_cmds(cmds: List[Cmd]) -> bool:
+    """Every command inside a substitution is a read-only Git command or a harmless text/status producer."""
+    for c in cmds:
+        if not c.words:
+            continue
+        if c.redirs:
+            return False
+        h = c.words[0]
+        if h.dyn:
+            return False
+        name = posixpath.basename(h.text)
+        if name == "git":
+            _c, _d, sub, rest, _i = _split_git(c.words[1:])
+            if sub is None or sub.dyn or sub.text not in READONLY_GIT and not (
+                    sub.text == "branch" and any(r.text in ("--show-current", "--list", "-l") for r in rest)):
+                return False
+            if any(r.text.startswith("--output") or r.text == "-O" for r in rest):
+                return False
+        elif name in PIPE_FILTERS:
+            if c.pipe_prev is None:
+                return False
+        elif name not in BENIGN_PRODUCERS:
+            return False
+    return True
+
+
+def _norm_path(t: str) -> str:
+    t = t.strip()
+    while t.startswith("./"):
+        t = t[2:]
+    return posixpath.normpath(t) if t else t
+
+
+def _val_risky(v: str) -> bool:
+    return "git" in v.lower() or any(p[:1] in ("-", "+") for p in v.split())
+
+
+def _var_name(w: Word) -> Optional[str]:
+    if not w.bare:
+        return None
+    m = _VARNAME.match(w.text)
+    return m.group(1) if m else None
+
+
+def _risky_word(w: Word, ctx: "_Ctx") -> bool:
+    """A dynamic word whose expansion could be an option / protected ref / force marker."""
+    if not w.dyn:
+        return False
+    if w.subs and not all(_benign_cmds(c) for c in w.subs):
+        return True
+    n = _var_name(w)
+    if n is not None:
+        st = ctx.var_state(n)
+        return st is _TAINT or (isinstance(st, str) and _val_risky(st))
+    if w.glob and "{" in w.text and ("," in w.text or ".." in w.text) and w.text[:1] in ("-", "+", "{"):
+        return True
+    return False
+
+
+def _subst_known(words: List[Word], ctx: "_Ctx"):
+    """Literal substitution of plain ``$VAR`` operands whose single static assignment is visible in this same command
+    string.  Returns (words, flagged); ``flagged`` means a variable carried an option-like / computed value."""
+    out: List[Word] = []
+    flagged = False
+    for w in words:
+        n = _var_name(w)
+        if n is None:
+            out.append(w)
+            continue
+        st = ctx.var_state(n)
+        if st is _TAINT:
+            flagged = True
+            out.append(w)
+        elif isinstance(st, str):
+            if _PLAIN_VALUE.match(st):
+                parts = st.split()
+                if not parts:
+                    if w.quoted:
+                        out.append(Word(""))
+                    continue
+                if any(p[:1] in ("-", "+") for p in parts):
+                    flagged = True
+                out.extend(Word(p) for p in parts)
+            else:
+                flagged = flagged or _val_risky(st)
+                out.append(w)
+        else:
+            out.append(w)
+    return out, flagged
 
 
 # ------------------------------------------------------------------- git classification
@@ -441,7 +609,11 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
         return
     if sub.dyn or sub.glob:
         ctx.add("unresolved-subcommand")
+        known = ctx.var_state(_var_name(sub)) if _var_name(sub) else None
+        if isinstance(known, str) and _PLAIN_VALUE.match(known) and known.strip():
+            _git_invocation([Word(known)] + list(rest), ctx)     # the literal value may prove destruction (deny)
         return
+    rest, flagged = _subst_known(rest, ctx)
     name = sub.text
     cands = [None] if dir_override else list(ctx.cands)
     fn = _HANDLERS.get(name)
@@ -451,11 +623,18 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
     if name == "gc":
         _gc_config(cfgs, ctx)
     before = len(ctx.found)
+    ctx.dyn_seen = []
     if fn is not None:
         fn(rest, ctx, cands)
+    elif name in _DESTRUCTIVE_SUBS:
+        Opts(rest, ctx=ctx)
+    dyn_seen, ctx.dyn_seen = ctx.dyn_seen, []
     if (len(ctx.found) == before and name in _DESTRUCTIVE_SUBS
             and any(w.dyn and not w.bare and w.text.startswith("-") for w in rest)):
         ctx.add("option-unresolved")   # e.g. `git reset --hard$IFS`: a flag we cannot read on a destructive-capable subcommand
+    elif name in _DESTRUCTIVE_SUBS and not _read_only_form(name, rest):
+        if flagged or (name != "submodule" and any(_risky_word(w, ctx) for w in dyn_seen)):
+            ctx.add("dynamic-argument")
     if name in ("checkout", "switch") and not dir_override:
         _track_branch(name, rest, ctx)
 
@@ -473,13 +652,25 @@ def _gc_config(cfgs: List[str], ctx: _Ctx) -> None:
             ctx.add("gc-prune-now" if m.group(1).lower() == "prune" else "reflog-destroy")
 
 
+def _read_only_form(name: str, rest: List[Word]) -> bool:
+    """Listing forms of otherwise destructive-capable subcommands (``git branch --list $X``, ``git stash list``)."""
+    texts = [w.text for w in rest if not w.dyn]
+    if name == "branch":
+        return any(t in ("--list", "-l", "--show-current", "-a", "-r", "-v", "-vv", "--contains", "--merged", "--no-merged")
+                   for t in texts) and not any(t in ("-d", "-D", "-f", "-m", "-M", "-c", "-C", "--delete", "--force", "--move", "--copy")
+                                               for t in texts)
+    if name in ("stash", "reflog", "worktree", "tag", "remote"):
+        return bool(texts) and texts[0] in ("list", "show", "ls") or (name == "tag" and any(t in ("-l", "--list") for t in texts))
+    return False
+
+
 def _cand_label(cands) -> str:
     names = [c for c in cands if c]
     return "/".join(dict.fromkeys(names)) or "the current branch"
 
 
 def _track_branch(sub: str, rest: List[Word], ctx: _Ctx) -> None:
-    o = Opts(rest, short_arg={"b", "B", "c", "C"}, long_arg={"orphan", "conflict"})
+    o = Opts(rest, ctx=ctx, short_arg={"b", "B", "c", "C"}, long_arg={"orphan", "conflict"})
     for k in ("b", "B", "c", "C"):
         if k in o.short_vals:
             ctx.cands = [o.short_vals[k]]
@@ -491,7 +682,7 @@ def _track_branch(sub: str, rest: List[Word], ctx: _Ctx) -> None:
 
 
 def _h_reset(rest, ctx, cands):
-    o = Opts(rest)
+    o = Opts(rest, ctx=ctx)
     if o.lopt("hard", 2):
         ctx.add("reset-hard")
         return
@@ -508,7 +699,7 @@ def _h_reset(rest, ctx, cands):
 
 
 def _h_clean(rest, ctx, cands):
-    o = Opts(rest, short_arg={"e"}, long_arg={"exclude"})
+    o = Opts(rest, ctx=ctx, short_arg={"e"}, long_arg={"exclude"})
     dry = "n" in o.shorts or o.lopt("dry-run", 2)
     interactive = "i" in o.shorts or o.lopt("interactive", 3)
     if dry or interactive:
@@ -531,7 +722,7 @@ def _force_create(o: Opts, key: str, ctx: _Ctx, cands) -> None:
 
 
 def _h_checkout(rest, ctx, cands):
-    o = Opts(rest, short_arg={"b", "B"}, long_arg={"orphan", "conflict", "pathspec-from-file"})
+    o = Opts(rest, ctx=ctx, short_arg={"b", "B"}, long_arg={"orphan", "conflict", "pathspec-from-file"})
     _force_create(o, "B", ctx, cands)
     if "f" in o.shorts or o.lopt("force", 3):
         ctx.add("checkout-force")
@@ -543,14 +734,14 @@ def _h_checkout(rest, ctx, cands):
 
 
 def _h_switch(rest, ctx, cands):
-    o = Opts(rest, short_arg={"c", "C"}, long_arg={"conflict"})
+    o = Opts(rest, ctx=ctx, short_arg={"c", "C"}, long_arg={"conflict"})
     _force_create(o, "C", ctx, cands)
     if "f" in o.shorts or o.lopt("force", 3) or o.lopt("discard-changes", 2):
         ctx.add("switch-discard")
 
 
 def _h_restore(rest, ctx, cands):
-    o = Opts(rest, short_arg={"s"}, long_arg={"source", "pathspec-from-file", "conflict"})
+    o = Opts(rest, ctx=ctx, short_arg={"s"}, long_arg={"source", "pathspec-from-file", "conflict"})
     staged = "S" in o.shorts or o.lopt("staged", 3)
     worktree = "W" in o.shorts or o.lopt("worktree", 3)
     if "p" in o.shorts or o.lopt("patch", 3) or (staged and not worktree):
@@ -560,13 +751,13 @@ def _h_restore(rest, ctx, cands):
 
 
 def _h_reflog(rest, ctx, cands):
-    o = Opts(rest)
+    o = Opts(rest, ctx=ctx)
     if o.pos and o.pos[0] in ("expire", "delete"):
         ctx.add("reflog-destroy")
 
 
 def _h_gc(rest, ctx, cands):
-    o = Opts(rest)
+    o = Opts(rest, ctx=ctx)
     for k, v in o.longs.items():
         if len(k) >= 3 and "prune".startswith(k) and v in ("now", "all"):
             ctx.add("gc-prune-now")
@@ -574,13 +765,13 @@ def _h_gc(rest, ctx, cands):
 
 
 def _h_prune(rest, ctx, cands):
-    o = Opts(rest, short_arg=set(), long_arg={"expire"})
+    o = Opts(rest, ctx=ctx, short_arg=set(), long_arg={"expire"})
     if not ("n" in o.shorts or o.lopt("dry-run", 3)):
         ctx.add("prune")
 
 
 def _h_stash(rest, ctx, cands):
-    o = Opts(rest, short_arg={"m"}, long_arg={"message"})
+    o = Opts(rest, ctx=ctx, short_arg={"m"}, long_arg={"message"})
     if o.pos and o.pos[0] == "clear":
         ctx.add("stash-clear")
     elif o.pos and o.pos[0] == "drop":
@@ -588,7 +779,7 @@ def _h_stash(rest, ctx, cands):
 
 
 def _h_update_ref(rest, ctx, cands):
-    o = Opts(rest, short_arg={"m"}, long_arg={"message"})
+    o = Opts(rest, ctx=ctx, short_arg={"m"}, long_arg={"message"})
     ref = o.pos[0] if o.pos else ""
     if o.lopt("stdin", 3):
         ctx.add("update-ref-stdin")      # stdin may hold `delete refs/heads/main`; cannot be inspected
@@ -612,7 +803,7 @@ def _norm_ref(ref: str) -> str:
 
 
 def _h_push(rest, ctx, cands):
-    o = Opts(rest, short_arg={"o"}, long_arg={"push-option", "receive-pack", "exec", "repo"})
+    o = Opts(rest, ctx=ctx, short_arg={"o"}, long_arg={"push-option", "receive-pack", "exec", "repo"})
     force = "f" in o.shorts or any(k.startswith("force") or (len(k) >= 3 and "force".startswith(k) and not "follow-tags".startswith(k))
                                    for k in o.longs)
     mirror = o.lopt("mirror", 3)
@@ -674,7 +865,7 @@ def _h_push(rest, ctx, cands):
 
 
 def _h_branch(rest, ctx, cands):
-    o = Opts(rest, short_arg={"u"}, long_arg={"set-upstream-to", "sort", "format", "contains", "no-contains",
+    o = Opts(rest, ctx=ctx, short_arg={"u"}, long_arg={"set-upstream-to", "sort", "format", "contains", "no-contains",
                                                "merged", "no-merged", "points-at", "color", "column"})
     delete = "d" in o.shorts or "D" in o.shorts or o.lopt("delete", 3)
     force = "f" in o.shorts or "D" in o.shorts or "M" in o.shorts or "C" in o.shorts or o.lopt("force", 3)
@@ -687,7 +878,7 @@ def _h_branch(rest, ctx, cands):
 
 
 def _h_commit(rest, ctx, cands):
-    o = Opts(rest, short_arg={"m", "F", "C", "c", "t"},
+    o = Opts(rest, ctx=ctx, short_arg={"m", "F", "C", "c", "t"},
              long_arg={"message", "file", "reuse-message", "reedit-message", "author", "date", "template", "cleanup",
                        "fixup", "squash", "trailer"})
     if o.lopt("amend", 2):
@@ -695,7 +886,7 @@ def _h_commit(rest, ctx, cands):
 
 
 def _h_rebase(rest, ctx, cands):
-    o = Opts(rest, short_arg={"s", "X", "x"}, long_arg={"onto", "exec", "strategy", "strategy-option"})
+    o = Opts(rest, ctx=ctx, short_arg={"s", "X", "x"}, long_arg={"onto", "exec", "strategy", "strategy-option"})
     for full in ("abort", "continue", "skip", "quit", "show-current-patch", "edit-todo"):
         if o.lopt(full, 3):
             return
@@ -715,20 +906,20 @@ def _run_string(text: str, ctx: _Ctx) -> None:
 
 
 def _h_tag(rest, ctx, cands):
-    o = Opts(rest, short_arg={"m", "F", "u"}, long_arg={"message", "file", "local-user", "format", "sort", "contains",
+    o = Opts(rest, ctx=ctx, short_arg={"m", "F", "u"}, long_arg={"message", "file", "local-user", "format", "sort", "contains",
                                                          "no-contains", "points-at", "merged", "no-merged", "cleanup"})
     if "d" in o.shorts or "f" in o.shorts or o.lopt("delete", 3) or o.lopt("force", 3):
         ctx.add("tag-rewrite")
 
 
 def _h_worktree(rest, ctx, cands):
-    o = Opts(rest, short_arg={"b", "B"}, long_arg={"reason"})
+    o = Opts(rest, ctx=ctx, short_arg={"b", "B"}, long_arg={"reason"})
     if o.pos and o.pos[0] == "remove" and ("f" in o.shorts or o.lopt("force", 3)):
         ctx.add("worktree-force-remove")
 
 
 def _h_submodule(rest, ctx, cands):
-    o = Opts(rest)
+    o = Opts(rest, ctx=ctx)
     if o.pos and o.pos[0] == "foreach":
         cmd_words = [w for w in rest if w.text not in ("foreach", "--recursive", "-q", "--quiet", "--")]
         if cmd_words:
@@ -754,7 +945,7 @@ def _h_bisect(rest, ctx, cands):
 
 
 def _h_checkout_index(rest, ctx, cands):
-    o = Opts(rest)
+    o = Opts(rest, ctx=ctx)
     if "f" in o.shorts or o.lopt("force", 3):
         if "a" in o.shorts or o.lopt("all", 3) or any(is_all_pathspec(p) for p in o.all_pos):
             ctx.add("checkout-discard-all")      # overwrites every file, like `restore .`
@@ -763,13 +954,13 @@ def _h_checkout_index(rest, ctx, cands):
 
 
 def _h_read_tree(rest, ctx, cands):
-    o = Opts(rest)
+    o = Opts(rest, ctx=ctx)
     if o.lopt("reset", 3):
         ctx.add("read-tree-reset" if "u" in o.shorts else "read-tree-reset-index")
 
 
 def _h_git_rm(rest, ctx, cands):
-    o = Opts(rest)
+    o = Opts(rest, ctx=ctx)
     if o.lopt("cached", 3) or o.lopt("dry-run", 3) or "n" in o.shorts:
         return
     if any(is_all_pathspec(p) for p in o.all_pos):
@@ -779,7 +970,7 @@ def _h_git_rm(rest, ctx, cands):
 
 
 def _h_config(rest, ctx, cands):
-    o = Opts(rest, short_arg={"f"}, long_arg={"file", "blob", "type", "default"})
+    o = Opts(rest, ctx=ctx, short_arg={"f"}, long_arg={"file", "blob", "type", "default"})
     read = ("l" in o.shorts or any(k.startswith(("get", "list", "unset", "remove-section")) for k in o.longs)
             or (o.pos and o.pos[0] in ("get", "list", "unset")))
     if read:
@@ -789,7 +980,7 @@ def _h_config(rest, ctx, cands):
 
 
 def _h_remote(rest, ctx, cands):
-    o = Opts(rest)
+    o = Opts(rest, ctx=ctx)
     if o.pos and o.pos[0] in ("set-url", "remove", "rm"):
         ctx.add("remote-modify")
 
@@ -944,7 +1135,9 @@ def _words(words: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: int) -> None
         elif _ASSIGN.match(t) and not words[0].dyn:
             if t.upper().startswith("GIT_CONFIG_KEY_") and t.partition("=")[2].lower().startswith("alias."):
                 ctx.add("env-alias")
-            words.pop(0)
+            _record_assign(words.pop(0), ctx)
+        elif _ASSIGN.match(t) and _var_assign_dyn(words[0]):
+            _record_assign(words.pop(0), ctx)
         else:
             break
     if words and words[0].text == "function" and not words[0].dyn:
@@ -955,6 +1148,23 @@ def _words(words: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: int) -> None
         return
     head = words[0]
     if head.dyn:
+        st = ctx.var_state(_var_name(head)) if _var_name(head) else None
+        if isinstance(st, str) and st.strip():
+            # `cmd="git reset --hard"; $cmd`: the literal value is visible in this same string; read it (never run it)
+            try:
+                vcmds = parse_script(st, ctx.budget, depth + 1)
+            except ShellParseError:
+                vcmds = []
+            if vcmds and vcmds[0].words and not any(w.dyn for w in vcmds[0].words):
+                if _mentions_git(vcmds[0].words):
+                    ctx.add("unresolved-command")          # a variable used as the executable is never a confident safe
+                _words(list(vcmds[0].words) + words[1:], cmd, ctx, depth)
+                return
+        elif st is _TAINT and ctx.mentions_git:
+            ctx.add("unresolved-command")
+        if head.subs and not all(_benign_cmds(c) for c in head.subs) and any(
+                "git" in w.text.lower() for c in head.subs for cc in c for w in cc.words[:1] + cc.words[1:]):
+            ctx.add("unresolved-command")
         if any(posixpath.basename(w.text) == "git" for w in words[1:]):
             ctx.add("unresolved-command")
             _words(words[1:], cmd, ctx, depth)
@@ -966,6 +1176,10 @@ def _words(words: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: int) -> None
         return
     name = posixpath.basename(head.text)
     args = words[1:]
+    if ctx.written and (_norm_path(head.text) in ctx.written or (
+            (name in SHELLS or name in ("source", ".", "exec", "eval") or _INTERP.match(name))
+            and any(_norm_path(w.text) in ctx.written for w in args if not w.text.startswith("-")))):
+        ctx.add("generated-script")                 # written earlier in this command line and now executed
     if name == "git":
         _git_invocation(args, ctx)
     elif name.startswith("git-") and name[4:] in GIT_SUBS:
@@ -976,6 +1190,20 @@ def _words(words: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: int) -> None
             _words(rest, cmd, ctx, depth)
     elif name in SHELLS or name == "su":
         _shell(name, args, cmd, ctx, depth)
+    elif name in ("source", "."):
+        _source(args, cmd, ctx, depth)
+    elif name in ("export", "declare", "typeset", "local", "readonly"):
+        for w in args:
+            if _ASSIGN.match(w.text):
+                _record_assign(w, ctx)
+    elif name in ("read", "mapfile", "readarray", "getopts", "for", "select"):
+        for w in (args[:1] if name in ("for", "select") else args):
+            if not w.text.startswith("-") and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", w.text):
+                ctx.vars.setdefault(w.text, []).append(_UNKNOWN)
+    elif name == "tee":
+        for w in args:
+            if not w.text.startswith("-"):
+                ctx.written.add(_norm_path(w.text))
     elif name == "eval":
         if any(w.dyn for w in args):
             if _mentions_git(args):
@@ -997,6 +1225,40 @@ def _words(words: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: int) -> None
             if _is_git_word(w):
                 _words(args[i:], cmd, ctx, depth)
                 break
+
+
+def _record_assign(w: Word, ctx: _Ctx) -> None:
+    name, _, value = w.text.partition("=")
+    append = name.endswith("+")
+    name = name.rstrip("+")
+    # the tokenizer keeps the whole ``NAME=value`` as one word; re-derive the value word's dynamism
+    vw = Word(value, dyn=w.dyn, bare=False, quoted=w.quoted, subs=w.subs, varexp=w.varexp)
+    if w.dyn and _VARNAME.match(value):
+        vw.bare = True
+    ctx.record_var(name, vw, append)
+
+
+def _var_assign_dyn(w: Word) -> bool:
+    """``NAME=$(...)`` / ``NAME=$X`` -- an assignment whose value is dynamic (the word carries the whole text)."""
+    return w.dyn and bool(_ASSIGN.match(w.text))
+
+
+def _source(args: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: int) -> None:
+    """``source FILE`` / ``. FILE``: a literal project file is out of scope (defer); stdin / process substitution /
+    a file generated in the same command are not."""
+    op = next((w for w in args if not (w.text.startswith("-") and len(w.text) > 1 and not w.dyn)), None)
+    if op is None:
+        return
+    if not op.dyn and _norm_path(op.text) in ctx.written:
+        return                                        # already reported as generated-script
+    if (not op.dyn and (op.text in STDIN_PATHS or op.text.startswith(("/dev/fd/", "/proc/self/fd/")))) or op.text == "<(...)":
+        texts = _stdin_scripts(cmd)
+        for text in texts:
+            _script(text, ctx, depth + 1)
+        if not texts and ctx.mentions_git:
+            ctx.add("stdin-script")
+    elif op.dyn and ctx.mentions_git and (_risky_word(op, ctx) or op.subs):
+        ctx.add("stdin-script")
 
 
 def _shell(name: str, args: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: int) -> None:
@@ -1026,9 +1288,19 @@ def _shell(name: str, args: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: in
         return
     if name == "su":
         return
-    if i >= n:  # script comes from stdin
-        for text in _stdin_scripts(cmd):
+    operand = args[i] if i < n else None
+    from_stdin = operand is None or (not operand.dyn and operand.text in STDIN_PATHS)
+    if cmd is not None and operand is None and any(_norm_path(f) in ctx.written for f in cmd.in_redirs):
+        ctx.add("generated-script")                 # `bash < gen.sh` after writing gen.sh
+    if from_stdin:  # script comes from stdin
+        texts = _stdin_scripts(cmd)
+        for text in texts:
             _script(text, ctx, depth + 1)
+        if operand is not None and not texts and ctx.mentions_git:
+            ctx.add("stdin-script")
+    elif operand is not None and operand.dyn and ctx.mentions_git and (
+            operand.text == "<(...)" or ctx.var_state(_var_name(operand) or "") is _TAINT or operand.subs):
+        ctx.add("stdin-script")                     # `bash <(echo '...git...')`: script text is computed
 
 
 def _find(args: List[Word], cmd, ctx: _Ctx, depth: int) -> None:
@@ -1076,6 +1348,9 @@ def _rm(args: List[Word], ctx: _Ctx) -> None:
 def _cmds(cmds: List[Cmd], ctx: _Ctx, depth: int) -> None:
     for cmd in cmds:
         _words(cmd.words, cmd, ctx, depth)
+        for target in cmd.redirs:
+            if target and not target.startswith("&") and target not in ("/dev/null", "1", "2"):
+                ctx.written.add(_norm_path(target))
 
 
 # --------------------------------------------------------------------------- public API
@@ -1083,10 +1358,10 @@ def classify_command(command: str, cfg: Optional[Config] = None, branch: Optiona
     """Classify a shell command string. Pure; never executes anything."""
     cfg = cfg or Config()
     if not isinstance(command, str):
-        return Verdict("allow")
+        return Verdict("defer")
     ctx = _Ctx(cfg, branch)
     text = command.replace("\x00", " ")
-    mentions_git = "git" in text.lower()
+    mentions_git = ctx.mentions_git = "git" in text.lower()
     try:
         if len(text) > MAX_COMMAND_CHARS:
             if mentions_git:
@@ -1097,7 +1372,7 @@ def classify_command(command: str, cfg: Optional[Config] = None, branch: Optiona
         if mentions_git:
             ctx.add("too-complex")
     if not ctx.found:
-        return Verdict("allow", "allow", "", "", [], ctx.commands[:20])
+        return Verdict("defer", "defer", "", "", [], ctx.commands[:20])
     ctx.found.sort(key=lambda f: (-f[0], f[1]))
     best = ctx.found[0][2]
     best.commands = ctx.commands[:20]

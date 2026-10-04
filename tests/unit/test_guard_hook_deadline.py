@@ -95,7 +95,7 @@ def test_monotonic_deadline_works_without_signal_timers(monkeypatch, capsys, tmp
 
     def slow_classify(*a, **k):
         time.sleep(0.5)
-        return Verdict("allow")
+        return Verdict("defer")
 
     monkeypatch.setattr(git_guard, "classify_command", slow_classify)
     out = run_main(monkeypatch, capsys, "git status", tmp_path)

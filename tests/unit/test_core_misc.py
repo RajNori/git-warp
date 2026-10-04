@@ -1,4 +1,4 @@
-from gitwarp.core.config import load_config, parse_frontmatter, Config
+from gitwarp.core.config import DEFAULT_PROTECTED, load_config, parse_frontmatter, Config
 from gitwarp.core.redact import redact, redact_obj
 from gitwarp.core.paths import classify_path
 
@@ -15,7 +15,8 @@ def test_config_parse(tmp_path):
         "---\nprotected_branches: [main, trunk]\nsafety_mode: strict\nsensitive_paths:\n  - src/billing/*\nmemory_enabled: false\n"
         "recorder_retention_days: 7\nbogus: 1\n---\nbody\n")
     cfg = load_config(tmp_path)
-    assert cfg.protected_branches == ["main", "trunk"] and cfg.safety_mode == "strict"
+    # additions are UNIONed onto the built-in floor (changed from the old replace-semantics: a repo cannot shrink the set)
+    assert cfg.protected_branches == list(DEFAULT_PROTECTED) + ["trunk"] and cfg.safety_mode == "strict"
     assert cfg.sensitive_paths == ["src/billing/*"] and cfg.memory_enabled is False and cfg.recorder_retention_days == 7
     assert any("bogus" in w for w in cfg.warnings)
 

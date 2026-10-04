@@ -21,8 +21,8 @@ def main(argv=None) -> int:
     c.add_argument("command", help="the command string to classify (it is NOT executed)")
     c.add_argument("--repo", default=None, help="repository for config / current branch (default: cwd)")
     c.add_argument("--branch", default=None, help="assume this current branch instead of looking it up")
-    c.add_argument("--mode", choices=("standard", "strict"), default=None, help="override safety_mode")
-    c.add_argument("--protected", default=None, help="comma separated protected branch patterns")
+    c.add_argument("--mode", choices=("standard", "strict"), default=None, help="raise safety_mode (never lowers the effective mode)")
+    c.add_argument("--protected", default=None, help="comma separated protected branch patterns to ADD to the built-in set")
     try:
         ns = p.parse_args(argv)
     except SystemExit:
@@ -30,10 +30,11 @@ def main(argv=None) -> int:
     if ns.action != "check":
         return fail("usage: warp.py guard check \"<command>\"")
     cfg: Config = load_config(git.repo_root(ns.repo))
-    if ns.mode:
-        cfg.safety_mode = ns.mode
-    if ns.protected is not None:
-        cfg.protected_branches = [x.strip() for x in ns.protected.split(",") if x.strip()]
+    if ns.mode == "strict":                      # same tighten-only rule as policy files: --mode can raise, never lower
+        cfg.safety_mode = "strict"
+    if ns.protected is not None:                 # additive: the built-in protected set is a floor
+        extra = [x.strip() for x in ns.protected.split(",") if x.strip()]
+        cfg.protected_branches = list(dict.fromkeys(list(cfg.protected_branches) + extra))
     branch: Optional[str] = ns.branch
     if branch is None:
         try:
