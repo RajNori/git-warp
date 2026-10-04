@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.0] - 2026-10-04
+## [0.1.0] - 2026-10-05
 
 First release. The implementation was recovered from session evidence (recovery checkpoint `da94148`), documented and
 hardened afterwards, then independently compared against a second implementation with a neutral acceptance harness
