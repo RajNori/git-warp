@@ -94,7 +94,8 @@ def test_config_protected_branches_and_strict_mode_are_honoured(repo):
     assert decision(call(event("git rebase main", repo.path))) == "ask"
     repo.write(".claude/git-warp.local.md", "---\nprotected_branches: [other]\n---\n")
     repo.checkout("main")
-    assert decision(call(event("git push -f", repo.path))) == "ask"
+    # changed: a repository policy cannot shrink the built-in set, so `main` stays protected -> deny (was ask)
+    assert decision(call(event("git push -f", repo.path))) == "deny"
 
 
 def test_invalid_config_falls_back_to_defaults(repo):

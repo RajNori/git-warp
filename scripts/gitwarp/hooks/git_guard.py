@@ -16,7 +16,7 @@ import sys
 import time
 
 from gitwarp.core import git
-from gitwarp.core.config import Config, load_config
+from gitwarp.core.config import load_config
 from gitwarp.core.output import pretool_decision, write_hook
 from gitwarp.safety.classifier import MAX_COMMAND_CHARS, classify_command
 
@@ -117,7 +117,7 @@ def _disarm() -> None:
 
 def _lookups(event: dict, command: str, check):
     """Config + current branch.  Any git failure/timeout falls back to defaults (classification still runs)."""
-    cfg, branch = Config(), None
+    cfg, branch = load_config(None), None      # built-in floor + user policy even outside a repository
     if "git" in command.lower() and len(command) <= MAX_COMMAND_CHARS:
         cwd = event.get("cwd")
         cwd = cwd if isinstance(cwd, str) and os.path.isdir(cwd) else (os.getcwd() if cwd is None else None)
@@ -125,8 +125,8 @@ def _lookups(event: dict, command: str, check):
             try:
                 root = git.repo_root(cwd, timeout=GIT_LOOKUP_TIMEOUT_S)
                 cfg = load_config(root)
-            except Exception:  # noqa: BLE001 - GitTimeout/GitError/anything: default config
-                cfg = Config()
+            except Exception:  # noqa: BLE001 - GitTimeout/GitError/anything: floor + user policy only
+                cfg = load_config(None)
             check()
             try:
                 branch = git.current_branch(cwd, timeout=GIT_LOOKUP_TIMEOUT_S)
