@@ -12,6 +12,7 @@ import pytest
 
 from gitwarp.memory import index, schema
 from tests.hook_helpers import SCRIPTS
+from tests.fake_secrets import GITHUB, HF, OPENAI
 
 WARP = SCRIPTS / "warp.py"
 
@@ -73,15 +74,15 @@ def test_v1_database_is_scrubbed_on_upgrade(make_repo):
     index.ensure_indexed(r.path)
     p = sd(r) / "warp.db"
     con = sqlite3.connect(p)
-    con.execute("UPDATE commits SET subject = 'leak ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'")
+    con.execute(f"UPDATE commits SET subject = 'leak {GITHUB}'")
     con.commit()
     con.execute("PRAGMA user_version = 1")
     con.commit()
     con.close()
-    assert b"ghp_A1b2" in p.read_bytes()
+    assert GITHUB[:8].encode() in p.read_bytes()
     res = index.ensure_indexed(r.path)
     assert res["total_commits"] == 2 and res["mode"] == "rebuild"
-    assert b"ghp_A1b2" not in p.read_bytes()
+    assert GITHUB[:8].encode() not in p.read_bytes()
     con = sqlite3.connect(p)
     assert con.execute("PRAGMA user_version").fetchone()[0] == schema.SCHEMA_VERSION
     con.close()
@@ -89,15 +90,15 @@ def test_v1_database_is_scrubbed_on_upgrade(make_repo):
 
 def test_commit_text_authors_paths_and_branch_are_redacted_in_db(make_repo):
     r = make_repo().seed(1)
-    r.branch("rel/ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", checkout=True)
-    r.commit("feat: key sk-proj-Ab3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ3kL6", {"HF_TOKEN=hf_Zq1Xw2Ce3Rv4Bt5Ny6Mu7Ik8Ol9Pa0SdFg.txt": "x\n"})
+    r.branch(f"rel/{GITHUB}", checkout=True)
+    r.commit(f"feat: key {OPENAI}", {f"HF_TOKEN={HF}.txt": "x\n"})
     index.ensure_indexed(r.path)
-    index.record_session(r.path, "s", "rel/ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "abc")
+    index.record_session(r.path, "s", f"rel/{GITHUB}", "abc")
     con = sqlite3.connect(sd(r) / "warp.db")
     blob = "".join(" ".join(map(str, row)) for t in ("commits", "files", "refs", "sessions", "events", "commit_files")
                    for row in con.execute(f"select * from {t}"))
     con.close()
-    assert "sk-proj-Ab3d" not in blob and "hf_Zq1X" not in blob and "ghp_A1b2" not in blob
+    assert OPENAI[:12] not in blob and HF[:7] not in blob and GITHUB[:8] not in blob
 
 
 def test_forget_requires_yes_and_deletes_only_regular_files(make_repo, tmp_path):

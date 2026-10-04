@@ -11,6 +11,7 @@ import pytest
 
 from gitwarp.core import storage
 from gitwarp.memory import state
+from tests.fake_secrets import GITHUB
 
 
 @pytest.fixture(autouse=True)
@@ -300,10 +301,10 @@ def test_names_with_separators_are_rejected(sd):
 
 def test_state_json_roundtrip_and_redaction(sd):
     assert state.update(sd, last_session="abc", n=3) is True
-    assert state.update(sd, note="token ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8") is True
+    assert state.update(sd, note=f"token {GITHUB}") is True
     data = state.read(sd)
     assert data["last_session"] == "abc" and data["n"] == 3 and data["schema"] == 1
-    assert "ghp_A1b2" not in (sd / "state.json").read_text()
+    assert GITHUB[:8] not in (sd / "state.json").read_text()
     assert mode(sd / "state.json") == 0o600
 
 

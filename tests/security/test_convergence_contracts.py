@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from tests.hook_helpers import SCRIPTS, run_hook
+from tests.fake_secrets import ANTHROPIC, AWS_KEY, AWS_SECRET, GITHUB, HF, NPM, OPENAI
 
 WARP = SCRIPTS / "warp.py"
 STATE_FILES = ("flight-recorder.jsonl", "state.json", "warp.db")
@@ -481,16 +482,16 @@ def test_unconditional_rules_cannot_be_disabled_by_any_config(repo, tmp_path):
 # --------------------------------------------------------------------------- privacy (GW-PRIVACY-001/002)
 
 SECRETS = {
-    "github": "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
-    "aws-key": "AKIAIOSFODNN7EXAMPLE",
-    "aws-secret": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-    "openai": "sk-proj-Ab3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ3kL6",
-    "anthropic": "sk-ant-api03-Zx9Yw8Vu7Ts6Rq5Po4Nm3Lk2Ji1Hg0Fe9Dc8Ba7",
+    "github": GITHUB,
+    "aws-key": AWS_KEY,
+    "aws-secret": AWS_SECRET,
+    "openai": OPENAI,
+    "anthropic": ANTHROPIC,
     "bearer": "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA",
     "cookie": "s3ss10nS3cr3tV4lue99",
     "basic-url": "hunter2S3cretPw",
-    "npm": "npm_Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8",
-    "hf": "hf_Zq1Xw2Ce3Rv4Bt5Ny6Mu7Ik8Ol9Pa0SdFg",
+    "npm": NPM,
+    "hf": HF,
     "pw-flag": "Sup3rS3cr3tPwFlag",
     "ssh-key": "/keys/prod_ed25519_secretname",
 }
