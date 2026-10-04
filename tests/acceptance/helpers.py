@@ -683,3 +683,40 @@ def warp_battery() -> list:
 
 
 GUARD_CLI = ("guard-check", ["guard", "check", "git status"])
+
+
+# --------------------------------------------------------------------------- measured runs (wall time + peak RSS)
+
+_MEASURE = r"""
+import json, os, resource, subprocess, sys
+out_file, timeout = sys.argv[1], float(sys.argv[2])
+argv = sys.argv[3:]
+timed_out = False
+try:
+    p = subprocess.run(argv, stdin=sys.stdin, timeout=timeout)
+    code = p.returncode
+except subprocess.TimeoutExpired:
+    code, timed_out = None, True
+ru = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+rss_kb = ru // 1024 if sys.platform == "darwin" else ru        # macOS reports bytes, Linux kilobytes
+with open(out_file, "w") as fh:
+    json.dump({"code": code, "timed_out": timed_out, "rss_kb": rss_kb}, fh)
+"""
+
+
+def run_measured(argv, *, cwd, env=None, input=None, timeout=60, workdir: Path) -> Run:
+    """Run ``argv`` under a tiny supervisor that reports the peak RSS of the largest process in the tree.
+
+    The supervisor enforces ``timeout`` itself (killing the child) so no stray process outlives a timeout.
+    """
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    out_file = workdir / f"m-{time.monotonic_ns()}.json"
+    t = time.monotonic()
+    p = subprocess.run([sys.executable, "-c", _MEASURE, str(out_file), str(timeout), *map(str, argv)], cwd=str(cwd),
+                       env=env or clean_env(), input=input, capture_output=True, text=True, errors="replace",
+                       timeout=timeout + 30)
+    dt = time.monotonic() - t
+    meta = json.loads(out_file.read_text()) if out_file.exists() else {"code": p.returncode, "timed_out": True, "rss_kb": None}
+    return Run(list(map(str, argv)), meta["code"], p.stdout, p.stderr, dt, timed_out=bool(meta["timed_out"]),
+               max_rss_kb=meta["rss_kb"])
