@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Optional
 
-from gitwarp.core import git
+from gitwarp.core import git, revisions
 from gitwarp.core.redact import redact
 
 from . import risk as risk_mod
@@ -34,14 +34,8 @@ _REVERSIBLE = re.compile(r"(?i)downgrade|def down\b|\bdown\s*[:(=]|rollback|reve
 _PRIORITY_STATUS = {"A": "added", "M": "modified", "D": "deleted", "R": "renamed", "C": "copied", "T": "type-changed"}
 
 
-def _count(ctx: Ctx, rng: str) -> Optional[int]:
-    r = ctx.safe(f"rev-list {rng}", lambda: git.run(["rev-list", "--count", rng], cwd=ctx.root))
-    if r is None or not r.ok:
-        return None
-    try:
-        return int(r.text)
-    except ValueError:
-        return None
+def _count(ctx: Ctx, include: list, exclude: list) -> Optional[int]:
+    return ctx.safe("rev-list --count", lambda: git.count_commits(include, exclude, cwd=ctx.root))
 
 
 def _name_status(ctx: Ctx, mb: str) -> dict:
@@ -162,13 +156,15 @@ def run_pr(root: Path, base_arg: Optional[str] = None) -> dict:
             return {"error": "could not auto-detect a base branch (no origin/HEAD, origin/main|master, main or master)",
                     "hint": "pass the base explicitly: `warp.py pr <BASE>` or `--base <REF>`", "local_branches": names}
     try:
-        git.check_ref(base)
-    except ValueError:
-        return {"error": f"invalid base ref: {base!r} (refs must not start with '-' or contain control characters)"}
-    base_sha = git.rev_parse(base, root)
-    if not base_sha:
-        return {"error": f"base ref not found: {base!r}", "hint": "check the name, or `git fetch` if it is a remote branch"}
-    mb = ctx.safe("merge-base", lambda: git.merge_base(base, "HEAD", root))
+        base_rev = revisions.resolve(base, root)          # the ONE normalization: everything below uses the sha
+    except revisions.RevisionError as e:
+        if e.reason in revisions.SYNTAX_REASONS:
+            return {"error": f"invalid base ref: {base!r} (refs must not start with '-' or contain control characters)", "reason": e.reason}
+        if e.reason == "ambiguous":
+            return {"error": f"base ref is ambiguous: {base!r}", "reason": e.reason, "hint": "use a longer id or the full ref name"}
+        return {"error": f"base ref not found: {base!r}", "reason": e.reason, "hint": "check the name, or `git fetch` if it is a remote branch"}
+    base_sha = base_rev.sha
+    mb = ctx.safe("merge-base", lambda: git.merge_base(base_rev, head, root))
     if not mb:
         msg = ("no merge base found between base and HEAD" + (" (shallow clone: history is truncated)" if shallow else " (unrelated histories)"))
         return {"error": msg, "base": {"ref": base, "sha": base_sha},
@@ -176,8 +172,8 @@ def run_pr(root: Path, base_arg: Optional[str] = None) -> dict:
     if shallow:
         ctx.warnings.append("shallow clone: merge-base found, but commit list and ahead/behind may be truncated")
 
-    total = _count(ctx, f"{mb}..HEAD")
-    behind_base = _count(ctx, f"HEAD..{git.check_ref(base)}")
+    total = _count(ctx, [head], [mb])
+    behind_base = _count(ctx, [base_rev], [head])
     up = ctx.safe("upstream", lambda: git.upstream(root)) if branch else None
     ab = ctx.safe("ahead/behind", lambda: git.ahead_behind(root, up)) if up else None
     if ab is None:

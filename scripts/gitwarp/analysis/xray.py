@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from gitwarp.core import git
+from gitwarp.core import git, revisions
 from gitwarp.core.redact import redact
 
 from . import risk as risk_mod
@@ -97,13 +97,11 @@ def _ahead_of_base(ctx: Ctx, state: dict) -> Optional[dict]:
         return None
     if state["branch"] and base.split("/")[-1] == state["branch"]:
         return {"base": base, "ahead": 0}
-    r = ctx.safe("ahead-of-base", lambda: git.run(["rev-list", "--count", f"{git.check_ref(base)}..HEAD"], cwd=ctx.root))
-    if r is None or not r.ok:
+    base_rev = ctx.safe("ahead-of-base", lambda: revisions.resolve(base, ctx.root))
+    if base_rev is None:
         return None
-    try:
-        return {"base": base, "ahead": int(r.text)}
-    except ValueError:
-        return None
+    n = ctx.safe("ahead-of-base", lambda: git.count_commits(["HEAD"], [base_rev], cwd=ctx.root))
+    return {"base": base, "ahead": n} if n is not None else None
 
 
 # ------------------------------------------------------------------ working tree

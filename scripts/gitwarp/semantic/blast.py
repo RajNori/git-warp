@@ -18,7 +18,7 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
-from ..core import git
+from ..core import git, revisions
 from ..core.config import load_config
 from ..core.paths import classify_path
 from . import cluster as cl
@@ -96,12 +96,13 @@ def analyze(root: Path, paths: Optional[list] = None, base: Optional[str] = None
     elif base:
         mode = f"base:{base}"
         try:
-            git.check_ref(base)
-        except ValueError as e:
-            return {"error": str(e), "warnings": warnings}
-        if git.rev_parse(base, root) is None:
-            return {"error": f"unknown base ref: {base}", "warnings": warnings}
-        r = git.run(["diff", "--name-status", "-z", f"{base}...HEAD"], cwd=root, timeout=30)
+            base_rev = revisions.resolve(base, root)
+            head_rev = revisions.resolve("HEAD", root)
+        except revisions.RevisionError as e:
+            if e.reason in revisions.SYNTAX_REASONS:
+                return {"error": str(e), "reason": e.reason, "warnings": warnings}
+            return {"error": f"unknown base ref: {base}", "reason": e.reason, "warnings": warnings}
+        r = git.run(["diff", "--name-status", "-z", f"{base_rev.sha}...{head_rev.sha}", "--"], cwd=root, timeout=30)
         parts = r.stdout.split("\x00") if r.ok else []
         i, changed = 0, []
         while i < len(parts):

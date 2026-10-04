@@ -7,7 +7,7 @@ import shlex
 from pathlib import Path
 from typing import Optional
 
-from ..core import git
+from ..core import git, revisions
 from ..core.config import load_config
 from ..core.paths import classify_path
 from ..core.redact import redact
@@ -68,17 +68,21 @@ def plan(cwd, good: list, bad: Optional[str], test: Optional[str] = None) -> tup
         warnings.append("--bad not given: defaulting to HEAD")
 
     # --- resolve refs
+    reasons: dict = {}
+
     def res(ref):
         try:
-            return git.rev_parse(ref, cwd)
-        except ValueError:
+            return revisions.resolve(ref, cwd).sha
+        except revisions.RevisionError as e:
+            reasons[ref] = e.reason
             return None
 
     bad_sha = res(bad)
     good_res = [(g, res(g)) for g in good]
     for name, sha in [(bad, bad_sha)] + good_res:
         if not sha:
-            blockers.append({"code": "unknown_ref", "message": f"{name!r} does not resolve to a commit", "suggest": ["git log --oneline -20   # find a commit id", "git tag --list"]})
+            blockers.append({"code": "unknown_ref", "reason": reasons.get(name, "not_found"), "message": f"{name!r} does not resolve to a commit",
+                             "suggest": ["git log --oneline -20   # find a commit id", "git tag --list"]})
     if blockers:
         return {**base, "ready": False, "blockers": blockers, "warnings": warnings}, 0
     good_shas = [s for _, s in good_res]

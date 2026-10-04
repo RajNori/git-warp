@@ -98,9 +98,17 @@ def test_blame_show_and_unsafe_refs(repo):
         git.log_commits("-p", cwd=repo.path)
 
 
-def test_timeout_and_missing_git(repo, monkeypatch):
+def test_timeout_and_missing_git(repo, monkeypatch, tmp_path):
+    # An alias-based slow command is (deliberately) no longer expressible: the runner refuses caller -c overrides
+    # and non-allowlisted subcommands.  A stand-in git binary that sleeps exercises the same timeout path.
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    slow = fake / "git"
+    slow.write_text("#!/bin/sh\nsleep 5\n")
+    slow.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake}:/usr/bin:/bin")
     with pytest.raises(git.GitTimeout):
-        git.run(["-c", "alias.slow=!sleep 5", "slow"], cwd=repo.path, timeout=0.2)
+        git.run(["status"], cwd=repo.path, timeout=0.3)
     monkeypatch.setenv("PATH", "/nonexistent")
     with pytest.raises(git.GitNotFound):
         git.run(["--version"])

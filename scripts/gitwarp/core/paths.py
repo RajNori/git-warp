@@ -32,6 +32,13 @@ _TEST_RE = re.compile(r"(^|/)(tests?|__tests__|spec|specs|e2e|cypress)(/|$)|(^|/
 _GENERATED_RE = re.compile(r"(^|/)(dist|build|out|node_modules|vendor|\.next|coverage|__pycache__|target)/|\.min\.(js|css)$|\.map$|\.pyc$|\.snap$|\.generated\.|_pb2\.py$", re.I)
 
 
+def check_pathspec(path: str) -> str:
+    """A path/pathspec handed to Git (always placed after ``--``): text without NUL, not empty."""
+    if not isinstance(path, str) or not path or "\x00" in path:
+        raise ValueError(f"unsafe path: {path!r}")
+    return path
+
+
 def matches_any(path: str, globs: Iterable[str]) -> bool:
     for g in globs:
         if fnmatch.fnmatch(path, g) or fnmatch.fnmatch(path, g.rstrip("/") + "/*") or fnmatch.fnmatch(PurePosixPath(path).name, g):
