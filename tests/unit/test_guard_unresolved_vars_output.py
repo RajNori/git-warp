@@ -46,12 +46,48 @@ def test_quoted_variable_before_first_operand_asks(cmd):
 
 
 @pytest.mark.parametrize("cmd", [
-    'git push origin "$BRANCH"', 'git push origin "${BRANCH}"', 'git checkout -b "feature-$X"', 'git stash push -m "wip $X"',
-    'git tag v1 -m "$MSG"', 'git push origin "refs/heads/$B"', 'git branch -m old "$NEW"', 'git checkout main -- "$FILE"',
-    'git reset --soft HEAD~"$N"', 'git fetch origin "$REF"', 'git pull origin "$B"',
+    'git checkout -b "feature-$X"', 'git stash push -m "wip $X"',
+    'git tag v1 -m "$MSG"', 'git push origin "refs/heads/$B"', 'git checkout main -- "$FILE"',
+    'git reset --soft HEAD~"$N"', 'git stash push -m "$MSG"', 'git tag -a v1 -m "$MSG"', 'git tag -a v1 -F "$FILE"',
 ])
-def test_quoted_variable_after_an_operand_keeps_baseline_behaviour(cmd):
+def test_exempt_variable_positions_stay_deferred(cmd):
     assert v(cmd).decision == "defer", (cmd, v(cmd).rule)
+
+
+@pytest.mark.parametrize("cmd", [
+    'git push origin "$BRANCH"', 'git push origin "${BRANCH}"', 'git push "$R" "$B"', 'git push origin "HEAD:$B"', 'git checkout "$X"',
+    'git switch "$X"', 'git branch -d "$B"', 'git branch "$NAME"', 'git branch -m old "$NEW"', 'git tag "$T"', 'git fetch origin "$REF"',
+    'git pull origin "$B"', 'git rebase "$B"', 'git worktree add "$P"', 'git restore "$F"', 'git reset "$R"', 'git clean "$P"', 'git rm "$F"',
+    'git update-ref refs/heads/x "$SHA"', 'git stash drop "$S"', 'git push origin "+$B"',
+])
+def test_any_unresolved_variable_operand_asks(cmd):
+    """Boundary: a variable's value may start with -, + or : (option / forced / deletion refspec)."""
+    got = v(cmd)
+    assert got.decision == "ask", (cmd, got.rule)       # the rule may be a more specific sibling (reset-unresolved, rebase, ...)
+    assert got.rule in ("dynamic-argument", "reset-unresolved", "clean-unresolved", "rebase", "stash-drop", "push-force", "unresolved-subcommand")
+
+
+def test_push_deletion_repro_with_a_real_bare_remote(tmp_path):
+    """The reviewer's repro, entirely inside tmp_path: the command string is only CLASSIFIED; the real push proves the danger."""
+    import os
+    import subprocess
+    env = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null", GIT_AUTHOR_NAME="a", GIT_AUTHOR_EMAIL="a@b",
+               GIT_COMMITTER_NAME="a", GIT_COMMITTER_EMAIL="a@b")
+
+    def g(cwd, *a):
+        return subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+
+    remote, work = tmp_path / "remote.git", tmp_path / "work"
+    g(tmp_path, "init", "-q", "--bare", str(remote))
+    g(tmp_path, "init", "-q", str(work))
+    (work / "f").write_text("x")
+    g(work, "add", "f")
+    g(work, "commit", "-qm", "i")
+    g(work, "push", "-q", str(remote), "HEAD:refs/heads/dev")
+    cmd = 'git push origin "$BRANCH"'
+    assert v(cmd).decision == "ask"                      # Guardian stops it before the value is ever known
+    g(work, "push", "-q", str(remote), ":dev")          # what BRANCH=:dev would have done
+    assert "dev" not in g(remote, "branch").stdout
 
 
 @pytest.mark.parametrize("cmd", [

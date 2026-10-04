@@ -43,7 +43,7 @@ def test_uncertain_constructs_never_defer(cmd):
     'git commit -m "$(cat <<EOF\nfix things\nEOF\n)"', "git tag -a v1 -m \"$(cat notes.txt)\"", 'git stash push -m "$(date)"',
     "git push origin $(git rev-parse --abbrev-ref HEAD)", "git checkout $(git rev-parse HEAD) -- f.txt",
     "git reset $(git merge-base a b)", "git branch --list $(echo 'f*')", "git branch --show-current", "git stash list $(echo -1)",
-    'git checkout -b "feature-$X"', 'git push origin "$BRANCH"', "git diff $FILES", "git log --since=\"$D\"",
+    'git checkout -b "feature-$X"', "git diff $FILES", "git log --since=\"$D\"",
     "B=feature; git push origin $B", "B=feature; git checkout $B", "N=3; git reset --soft HEAD~$N",
     "echo $(echo --hard)", "ls $(pwd)", "$EDITOR notes.txt", "EDITOR=vim; $EDITOR notes.txt", "x=$(date); echo $x",
     "bash script.sh", "bash ./build.sh && echo ok", "echo hi > out.txt; cat out.txt", "echo 'git reset --hard' > notes.txt; cat notes.txt",

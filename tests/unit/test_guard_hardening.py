@@ -46,12 +46,18 @@ def test_dynamic_flag_on_destructive_subcommand_without_other_rule_asks():
 
 @pytest.mark.parametrize("cmd", [
     "git status", "git commit -m 'reset --hard'", 'git commit -m "$MSG"', "echo git reset --hard", "git log --grep=reset",
-    "grep -r 'git clean -fd' .", 'git checkout -b "feature-$X"', 'git push origin "$BRANCH"', "git diff $FILES",
+    "grep -r 'git clean -fd' .", 'git checkout -b "feature-$X"', "git diff $FILES",
     "git commit -m \"fix $X\" --no-verify", "$EDITOR notes.txt", "$CC -o out main.c", "git stash push -m \"wip $X\"",
     'git log --since="$D" --oneline',
 ])
 def test_dynamic_false_positives_stay_allowed(cmd):
     assert v(cmd).decision == "defer", cmd
+
+
+def test_quoted_variable_operand_in_push_is_ask_because_it_can_be_a_deletion_refspec():
+    """Changed from defer: BRANCH=:dev makes `git push origin "$BRANCH"` delete the remote branch (demonstrated by review)."""
+    got = v('git push origin "$BRANCH"')
+    assert got.decision == "ask" and got.rule == "dynamic-argument"
 
 
 # ------------------------------------------------------------------ M2: echo / printf piped into a shell

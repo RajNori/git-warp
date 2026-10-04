@@ -23,10 +23,14 @@ subcommand (reset, clean, push, checkout, restore, branch, switch, stash, tag, r
 Such constructs are ``ask`` (or ``deny`` when the literal part already proves destruction).  Dynamic words stay
 ``defer`` in read-only Git commands (log, diff, show, status, rev-parse, merge-base, ls-files, ...) and in non-Git
 commands, and a substitution whose every command is a read-only Git command (or ``date``/``pwd``/``whoami``...) is
-treated as a harmless producer.  Variable boundary inside a destructive-capable subcommand: an UNQUOTED word that starts
-with an expansion (``$V``, ``${V}``) is word-split and may become several words including options, so it is ``ask`` in
-any position; a QUOTED one is a single word but is ``ask`` before the first positional operand (where options sit) and an
-ordinary operand after it (``git push origin "$BRANCH"`` stays ``defer``).  A variable assigned in the same command
+treated as a harmless producer.  Variable boundary inside a destructive-capable subcommand: ANY unresolved
+variable word -- quoted or not, before or after an operand -- is ``ask``, because its value may start with ``-`` (option),
+``+`` (forced refspec) or ``:`` (deletion refspec); ``BRANCH=:dev; git push origin "$BRANCH"`` deletes a remote branch.
+Exemptions: values consumed by message/file style options (``-m "$MSG"``, ``-F``, ``-t``, ``--message``, ...), anything after a
+literal ``--``, a word with a literal non-option prefix and no colon (``feature-$X``, ``refs/heads/$B``, ``HEAD~$N``),
+variables with a known static value in the same string, and read-only subcommands.  Honest trade-off: legitimate scripts such
+as ``git checkout "$BRANCH"`` or ``git push origin "$B"`` now ask every time; the guard cannot see the value and prefers the
+prompt to a silent deletion.  A variable assigned in the same command
 string is the exception: exactly one static value is substituted (never evaluated), a value assigned only from read-only
 Git output cannot be an option, an option-like / computed / multiply-assigned value is ``ask`` (or ``deny`` if the literal
 proves destruction).  Dry-run modes that Git guarantees win over any other flag (``clean -n``, ``push -n``) settle the
@@ -574,25 +578,24 @@ def _risky_word(w: Word, ctx: "_Ctx") -> bool:
 
 
 def _uncertain_position(w: Word, seen_pos: bool, ctx: "_Ctx") -> bool:
-    """Boundary for dynamic words in a destructive-capable Git subcommand (documented in the module docstring):
-    * a command substitution that is not provably harmless, or a variable assigned an option-like / computed value -> uncertain;
-    * an UNQUOTED word that starts with an expansion (``$V``, ``${V}``, ``$A$B``) is word-split and may become several
-      words including options -> uncertain in ANY position;
-    * a QUOTED one is a single word, but before the first positional operand (where options normally sit) it can still be
-      ``--force`` -> uncertain; after a positional operand it is an operand (``git push origin "$BRANCH"``) -> not.
-    A variable with a known static value, or assigned only from read-only Git output, is provably harmless."""
+    """Boundary for dynamic words in a destructive-capable Git subcommand (documented in the module docstring).
+
+    ANY unresolved variable word -- quoted or not, before or after an operand -- is uncertain, because its value may start
+    with ``-`` (option), ``+`` (forced refspec) or ``:`` (deletion refspec): ``git push origin "$BRANCH"`` with
+    ``BRANCH=:dev`` deletes the remote branch.  Exempt (the caller never passes these here): values consumed by value
+    options (``-m "$MSG"``, ``-F``, ``-t`` ...), anything after a literal ``--``.  Exempt here: a word with a literal
+    prefix that cannot start an option / refspec and holds no ``:`` (``feature-$X``, ``refs/heads/$B``, ``HEAD~$N``), a
+    variable with a known static value, and a variable assigned only from read-only Git output."""
     if _risky_word(w, ctx):
         return True
-    if w.varexp == 0 or w.text[:1] != "$":
+    if w.varexp == 0:
         return False
     n = _var_name(w)
     if n is not None:
         st = ctx.var_state(n)
         if st is _BENIGN or isinstance(st, str):
             return False
-    elif w.subs and all(_benign_cmds(c) for c in w.subs) and w.varexp == 0:
-        return False
-    return (not w.quoted) or (not seen_pos)
+    return w.text[:1] in ("$", "-", "+", ":", "`") or ":" in w.text
 
 
 def _subst_known(words: List[Word], ctx: "_Ctx"):
