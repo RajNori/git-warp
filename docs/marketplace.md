@@ -1,7 +1,7 @@
 # Marketplace listing draft and publishing checklist
 
-**Git Warp is not published to any marketplace.** Nothing in this repository has been tagged, pushed or submitted.
-This page holds draft listing text and an honest list of what remains. It describes only what is implemented.
+**Git Warp is not listed in any marketplace.** Install it from this repository (see the README).
+This page holds draft listing text and an honest list of what remains for a public listing. It describes only what is implemented.
 
 ## What `claude` says about marketplaces
 
@@ -51,55 +51,26 @@ developer-tools
 `git-rescue`, `git-archaeology`, `git-bisect-ai`, `git-commits`, `git-blast-radius`, `git-conflict`,
 `git-temporal-review`, `git-memory`), 3 agents (`git-forensic-analyst`, `git-history-analyst`, `git-risk-analyst`).
 
-## Checklist: what remains before publishing
+## Status and what remains for a public listing
 
-Derived from the repository's current state. Unchecked means not done or not verified by the documentation author.
+Done for v0.1.0 (evidence in `planning/`):
 
-### Repository and release
+- [x] Version `0.1.0` in `.claude-plugin/plugin.json`, `CHANGELOG.md` and the README; `claude plugin validate . --strict` passes
+      for the plugin, `skills/` and `agents/`.
+- [x] Full test suite, independent neutral acceptance corpus (`planning/DISPOSABLE_CONVERGENCE_RESULTS.md`) and an independent
+      code review (`planning/CONVERGENCE_REVIEW.md`).
+- [x] Fresh install as a user would do it, in an isolated Claude configuration: a local marketplace listing the plugin,
+      `claude plugin marketplace add`, `claude plugin install`, `claude plugin details` (10 skills, 3 agents, 4 hooks), and the
+      installed hook and CLI run from an unrelated directory (`planning/FRESH_INSTALL.md`).
+- [x] Live Claude Code acceptance: skill discovery, SessionStart/PreToolUse/PostToolUse/Stop delivery, DENY / ASK / DEFER, ASK
+      against a pre-approved Bash rule and against a skill-level pre-approval (the real interactive TUI), and every workflow skill
+      (`planning/LIVE_ACCEPTANCE.md`).
 
-- [ ] Decide the release version. `plugin.json` says `0.1.0`; no `1.0.0` is claimed anywhere. The CHANGELOG lists
-      `0.1.0` as unreleased.
-- [ ] Merge `cleanup/claude-recovery` (the recovery and cleanup work) to `main` and push. As of
-      `planning/POST_RESTORE_VALIDATION.md` GitHub's `main` was still the scaffold commit `af40260`.
-- [ ] Commit the new documentation (README, `docs/`, `examples/`, `CHANGELOG.md`); they are uncommitted work.
-- [ ] Commit or remove the untracked `planning/CLEANUP_LOG.md` and `planning/POST_RESTORE_VALIDATION.md`.
-- [ ] Decide whether `planning/` ships in the published repository (it holds working notes, including a stale
-      `STATUS.md` that shows every work package as pending).
-- [ ] Create a release tag only when ready (`claude plugin tag` is the documented helper; not run).
-- [ ] Add a marketplace manifest (or get listed in an existing marketplace) and re-run `claude plugin validate`
-      against it. Its required shape was not researched here.
-- [ ] Optional manifest metadata: `claude plugin validate . --strict` passes today, but `plugin.json` has no
-      `homepage` field and the author has no email/URL.
+Still to do before a **public marketplace** listing:
 
-### Verification not yet done
-
-- [ ] Re-run the test suite on the commit to be released (the project lead reports 1345 passed now, 1070 at
-      checkpoint `da94148`; not re-run during documentation work). There is no CI configuration in the repository.
-- [ ] End-to-end check in a real interactive Claude Code session: skills trigger from natural language, the hooks
-      fire, the guard's `deny`/`ask` decisions are honoured and displayed as expected. Only a headless listing of
-      skill names was observed.
-- [ ] Test on Linux and on other Python (3.8 to 3.12) and git versions. Only Python 3.13.2 / git 2.53.0 / macOS
-      were used. Code needs at least: Python 3.8+ (walrus operator), SQLite 3.24+ (upsert), git 2.36+
-      (`worktree list -z`), by reading the code. Windows is untested.
-- [ ] Test on a large repository to learn real index and analysis timings (none are claimed here).
-
-### Known issues to fix or document before release
-
-- [ ] The guard allows single-file discards (`git checkout -- <file>`, `git restore <file>`, `git rm -f <file>`),
-      `git fetch -f`/`git pull -f`, and computed forms such as `git reset $(echo --hard)`. Decide whether that is
-      acceptable and say so in the listing. Other limits to disclose: a repo-controlled `.claude/git-warp.local.md`
-      can narrow `protected_branches`; agents declare unrestricted `Bash`; hook timeouts fail open.
-- [ ] `planning/ARCHITECTURE.md` and `planning/STATUS.md` are out of date with the code (see
-      [architecture.md](architecture.md)).
-- [ ] `skills/git-commits` tells Claude it may run `git add`/`git commit` when the user asks, but its `allowed-tools`
-      does not list them, so those calls would go through normal permission prompts (intended or not, decide).
-- [ ] Verify in a live session that `${CLAUDE_PLUGIN_ROOT}` inside `SKILL.md` command lines is expanded and that the
-      narrowed `allowed-tools` prefix (`Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*)`) actually matches.
-      Not observed; if it does not match it fails closed to a permission prompt.
-- [ ] Security review of the hook scripts and redaction by someone other than the author.
-
-### Listing content
-
-- [ ] Screenshots or a recording of a real session (none exist; `examples/` holds captured CLI output only).
-- [ ] Decide whether to ship the `examples/` directory in the plugin.
-- [ ] Re-read this draft listing against the code at release time.
+- [ ] Add a marketplace manifest in this repository (or get listed in an existing marketplace). This repository ships no
+      `marketplace.json`; the install flow above was verified with a separate local marketplace directory.
+- [ ] Linux validation and other Python/Git versions (`platforms.md`); Windows is unsupported for v0.1.0.
+- [ ] CI configuration (none exists in the repository).
+- [ ] Optional manifest metadata (`homepage`, author contact), screenshots or a recording of a real session.
+- [ ] Decide whether `planning/` and `examples/` ship in the published artifact.

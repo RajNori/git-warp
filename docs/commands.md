@@ -250,6 +250,8 @@ Example: [../examples/guard-check.md](../examples/guard-check.md). Rule table: [
 ## Agents
 
 `agents/git-forensic-analyst.md` (rescue, archaeology, bisect planning), `agents/git-history-analyst.md`
-(archaeology), `agents/git-risk-analyst.md` (commits, blast, temporal, conflict). All are described as read-only
-and use `Read`, `Grep`, `Glob`, `Bash`. That restriction is in their prompts; unlike the guard it is not enforced
-by code. The forensic analyst's prompt allows one write, `rescue preserve`, only when explicitly asked.
+(archaeology), `agents/git-risk-analyst.md` (commits, blast, temporal, conflict). Their tools are exactly `Read`,
+`Grep` and `Glob`: **they have no shell**, so they cannot run `git` or `warp.py`. The calling assistant runs the matching
+skill's `warp.py` command and passes the JSON in; an agent that needs more evidence asks for an exact command to be run.
+This is enforced by the tool list, not by prompt text (Claude Code cannot scope `Bash` in agent frontmatter, so `Bash`
+was removed rather than described as read-only). The forensic analyst may *propose* `rescue preserve`; it never runs it.

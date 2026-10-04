@@ -42,11 +42,13 @@ python3 scripts/warp.py guard check "<the exact command>" --branch <your branch>
 commands are meant to be run by you, outside Claude, if you really intend them.
 
 **Too strict or too lax for my project.** Change `protected_branches` or `safety_mode` in
-`.claude/git-warp.local.md`. There is no config switch to turn the guard off.
+`.claude/git-warp.local.md` (or `~/.claude/git-warp.local.md`). A repository can only *tighten* the policy; there is no
+config switch to turn the guard off ([configuration.md](configuration.md)).
 
-**It did not stop something dangerous.** See [guard-limitations.md](guard-limitations.md). Scripts, variable
-expansion, global-config aliases and non-Bash tools are invisible to it; single-file `git checkout -- file` and
-`git restore file` are allowed.
+**It did not stop something dangerous.** See [guard-limitations.md](guard-limitations.md). Script contents, values
+that only exist at run time and non-Bash tools are invisible to it; single-file `git checkout -- file` and
+`git restore file` are deferred. A command that was asked about or denied reports its rule name; `warp.py guard check "<cmd>"`
+shows how any command classifies.
 
 **"Git Warp guard error — verify manually".** The guard failed internally on a command that mentions git and asked
 instead of guessing. Run the command through `guard check` to see whether the error repeats.
@@ -94,9 +96,7 @@ Check with `warp.py memory status` (`recorder.exists`, `enabled.recorder`).
 
 ## Tests
 
-`python3 -m pytest tests -q` needs `pytest` installed. The current suite is reported to be 1345 passed (supplied by the
-project lead; not re-run by the documentation author). The recovery checkpoint had 1070 passed, 1 warning, and the warning was a `SyntaxWarning: invalid escape sequence '\;'` in a test string
-(`tests/unit/test_guard_branches.py`), recorded in [../planning/POST_RESTORE_VALIDATION.md](../planning/POST_RESTORE_VALIDATION.md).
+`python3 -m pytest tests -q` needs `pytest` installed (about 6 minutes; the crash, scale and acceptance suites make up most of it). The suite passed at release (see the README and [../planning/BASELINE_TEST_AUDIT.md](../planning/BASELINE_TEST_AUDIT.md)). The warnings summary contains a `SyntaxWarning: invalid escape sequence '\;'` that comes from a test string in `tests/unit/test_guard_branches.py`; it is cosmetic.
 
 ## Still stuck
 

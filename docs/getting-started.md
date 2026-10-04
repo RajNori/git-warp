@@ -35,7 +35,7 @@ Once the plugin is loaded in a Git repository, the hooks in `hooks/hooks.json` r
 | Hook | When | Effect |
 |---|---|---|
 | `SessionStart` | session starts, resumes, clears or compacts | Adds a short context block (branch, upstream, working-tree counts, stashes, worktrees, last 5 commits, safety policy reminder) and does a bounded incremental history index (about 5 s budget, first run capped at 1000 commits) |
-| `PreToolUse` on `Bash` | before every Bash command | The Git guard returns allow, ask or deny. See [safety-model.md](safety-model.md) |
+| `PreToolUse` on `Bash` | before every Bash command | The Git guard returns deny, ask or defer (no objection). See [safety-model.md](safety-model.md) |
 | `PostToolUse` on `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `Bash` | after each such tool call | Appends a redacted line to the flight recorder. See [privacy.md](privacy.md) |
 | `Stop` | end of each assistant turn | If the working tree changed, prints a short report (branch, counts, risk level, diffstat, next step); stays silent when nothing changed or the report is identical to the last one |
 
