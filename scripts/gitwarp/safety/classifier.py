@@ -5,6 +5,23 @@ function: it tokenizes the command string (never runs it, never executes an expa
 (through wrappers, subshells, ``bash -c``, ``eval "literal"``, ``xargs``, ``find -exec``, here-docs piped to a shell)
 and returns the MOST severe verdict.  See ``docs/guard-limitations.md`` for what it cannot see.
 
+Program-running surface (principle)
+-----------------------------------
+What can make Git execute or load a program is derived from Git's own documentation (read from Git 2.53: ``git help git``
+ENVIRONMENT VARIABLES, every ``git help config`` key that names a program/command/helper/editor/pager/proxy/ssh/askpass/
+driver/filter/hook path/template dir, and the per-subcommand options such as ``--ext-diff``, ``--textconv``, ``--upload-pack``,
+``--receive-pack``, ``--exec``, ``config --edit``, ``bisect run``, ``hook run``, ``help -w/-m/-i``, ``merge -s <external>``,
+``ext::`` URLs, ``--exec-path=``, ``--template``) and is ASK (``exec-option``, ``config-exec``, ``output-file``).  For the
+environment the rule is DEFAULT-ASK: any ``GIT_*`` assignment (prefix, standalone, ``export``, ``env X=..``) asks unless it is
+on a small harmless allowlist (identity, prompt/lock/ceiling variables, ``GIT_CONFIG_COUNT/VALUE_n``, harmless pager/editor
+values, ``GIT_TRACE*`` with 0/1/true, ``GIT_CONFIG_GLOBAL/SYSTEM=/dev/null``).  Repository-redirecting variables (``GIT_DIR``,
+``GIT_WORK_TREE``, ``GIT_INDEX_FILE``, ``GIT_OBJECT_DIRECTORY``, ``GIT_NAMESPACE``, ``GIT_COMMON_DIR`` ...) ask too: they defeat the
+current-branch / protected-branch logic.  Glob and brace words that could expand into an option (``-*``, ``{,-f}``) ask in
+mutating subcommands.  Limits: the guard never reads git config or the environment of the shell, so a ``core.pager`` /
+``alias`` / ``GIT_*`` value configured outside the command string, files that already exist (a file literally named ``-f``
+is only dangerous together with an unquoted glob, which is covered), tilde forms such as ``~-``, and programs launched by
+hooks or by Git itself during an ordinary command (``git commit`` runs the configured editor and pre-commit hooks) are not visible.
+
 Canonical decisions
 -------------------
 ``deny``   a clearly recognised prohibited destructive operation.
@@ -694,6 +711,11 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
             ctx.add("alias-inline")
         elif _exec_config(c.partition("=")[0], c.partition("=")[2]):
             ctx.add("config-exec", tool=c.partition("=")[0].strip()[:60])
+    for w in words:
+        if sub is not None and w is sub:
+            break
+        if w.text.startswith("--exec-path="):
+            ctx.add("exec-option", tool="git", opt="--exec-path=<dir> makes git run git-* programs from that directory")
     if sub is None or info_only:
         return
     if ctx.exec_env:
@@ -711,7 +733,7 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
         ctx.add("output-file", tool=name, opt=opt)
     if name in _GLOB_EXTRA_SUBS and not _read_only_form(name, rest) and _glob_option_word(rest):
         ctx.add("dynamic-argument")
-    xo = _exec_option(name, rest, ctx) if name != "rebase" else None
+    xo = _exec_option(name, rest, ctx)
     if xo:
         ctx.add("exec-option", tool="git " + name, opt=xo)
     if sub_override is None and name not in GIT_BUILTINS:
@@ -760,10 +782,12 @@ def _gc_config(cfgs: List[str], ctx: _Ctx) -> None:
 _EXEC_CONFIG = re.compile(r"^(core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|alternaterefscommand)|pager\..+|"
                           r"diff\.(external|[^.]+\.(textconv|command))|credential(\..+)?\.helper|sequence\.editor|gpg(\..+)?\.program|"
                           r"gpg\.ssh\.defaultkeycommand|merge\..+\.(driver|name)|filter\..+\.(clean|smudge|process)|uploadpack\.packobjectshook|"
-                          r"remote\..+\.(uploadpack|receivepack|vcs|proxy)|sendemail\..+|difftool\..+\.cmd|mergetool\..+\.cmd|"
-                          r"browser\..+\.cmd|man\..+\.cmd|instaweb\.browser|web\.browser|http\.sslcommand)$", re.I)
+                          r"remote\..+\.(uploadpack|receivepack|vcs|proxy)|sendemail\..+|difftool\..+\.cmd|mergetool\..+\.(cmd|path)|"
+                          r"browser\..+\.cmd|man\..+\.cmd|man\.viewer|instaweb\.(browser|httpd)|web\.browser|help\.browser|http\.sslcommand|"
+                          r"gc\.recentobjectshook|guitool\..+\.cmd|imap\.tunnel|init\.templatedir|interactive\.difffilter|"
+                          r"trailer\..+\.(command|cmd)|receive\.procreceiverefs|core\.hookspath)$", re.I)
 _SAFE_PAGERS = frozenset({"", "cat", "less", "more", "less -FRX", "less -R", "false", "true"})
-ALWAYS_EXEC_SUBS = frozenset("""difftool mergetool instaweb daemon http-backend http-fetch http-push credential credential-cache
+ALWAYS_EXEC_SUBS = frozenset("""web--browse difftool mergetool instaweb daemon http-backend http-fetch http-push credential credential-cache
 credential-gcloud credential-netrc credential-osxkeychain credential-store send-email imap-send gui gitk citool remote-ext
 receive-pack upload-pack cvsserver""".split())
 EXEC_ENV = frozenset("""GIT_EXTERNAL_DIFF GIT_SSH GIT_SSH_COMMAND GIT_PAGER GIT_EDITOR GIT_SEQUENCE_EDITOR GIT_ASKPASS SSH_ASKPASS
@@ -771,7 +795,7 @@ GIT_PROXY_COMMAND GIT_TEMPLATE_DIR GIT_EXEC_PATH""".split())
 _SAFE_ENV_VALUES = frozenset({"", "cat", "less", "more", "true", "false", ":", "less -FRX", "less -R"})
 
 
-def _exec_config(key: str, value: str) -> bool:
+def _exec_config_key(key: str, value: str) -> bool:
     """``key`` (``core.pager``, ``remote.o.uploadpack``, ...) makes Git run a program, and ``value`` is not a benign pager."""
     k = key.strip()
     if not _EXEC_CONFIG.match(k):
@@ -779,6 +803,13 @@ def _exec_config(key: str, value: str) -> bool:
     if k.lower().startswith(("core.pager", "pager.")) and value.strip().strip("'\"") in _SAFE_PAGERS:
         return False
     return True
+
+
+def _exec_config(key: str, value: str) -> bool:
+    k = key.strip()
+    if re.match(r"^protocol\..+\.allow$", k, re.I):            # protocol.ext.allow=always enables ext:: (runs a command)
+        return value.strip().strip("'\"").lower() == "always"
+    return _exec_config_key(k, value)
 
 
 def _exec_option(name: str, rest: List[Word], ctx: "_Ctx") -> Optional[str]:
@@ -793,6 +824,30 @@ def _exec_option(name: str, rest: List[Word], ctx: "_Ctx") -> Optional[str]:
             break
         if not w.dyn or w.text.startswith("-"):
             words.append(w.text)
+    firstpos = next((t for t in words if not t.startswith("-")), "")
+    if name == "config" and (any(t in ("-e", "--edit") or (t.startswith("-") and not t.startswith("--") and "e" in t[1:] and len(t) <= 3)
+                                 for t in words) or firstpos == "edit"):
+        return "--edit launches the configured editor"
+    if name == "replace" and any(_prefix_opt(t, "edit", 3) for t in words):
+        return "--edit launches the configured editor"
+    if name == "hook" and firstpos == "run":
+        return "hook run executes a hook"
+    if name == "help" and any(t in ("--web", "--man", "--info") or (t.startswith("-") and not t.startswith("--") and set(t[1:]) & set("wmi"))
+                              for t in words):
+        return "help -w/-m/-i launches a browser / man / info program"
+    if name in ("merge", "pull", "rebase"):
+        for i, t in enumerate(words):
+            val = None
+            if t == "-s" or t == "--strategy":
+                val = words[i + 1] if i + 1 < len(words) else ""
+            elif t.startswith("-s") and not t.startswith("--") and len(t) > 2:
+                val = t[2:]
+            elif t.startswith("--strategy="):
+                val = t.split("=", 1)[1]
+            if val is not None and val not in ("ort", "recursive", "resolve", "octopus", "ours", "subtree"):
+                return "-s " + val[:30] + " runs git-merge-" + val[:30] + " from PATH"
+    if name in ("fetch", "pull", "push", "clone", "ls-remote", "remote", "submodule", "archive", "bundle") and any("ext::" in t for t in words):
+        return "ext:: remote runs a command"
     for i, t in enumerate(words):
         if _prefix_opt(t, "ext-diff") or _prefix_opt(t, "textconv"):
             return t.split("=", 1)[0]
@@ -800,6 +855,8 @@ def _exec_option(name: str, rest: List[Word], ctx: "_Ctx") -> Optional[str]:
             for full in ("upload-pack", "receive-pack", "exec", "remote"):
                 if _prefix_opt(t, full, 3 if full != "remote" else 6) and not (full == "remote" and name != "archive"):
                     return t.split("=", 1)[0]
+        if name == "init" and _prefix_opt(t, "template", 4):
+            return "--template"
         if name == "clone":
             if t == "-u" or (t.startswith("-u") and not t.startswith("--")) or _prefix_opt(t, "template", 4):
                 return t.split("=", 1)[0] if t.startswith("--") else "-u"
@@ -810,14 +867,44 @@ def _exec_option(name: str, rest: List[Word], ctx: "_Ctx") -> Optional[str]:
     return None
 
 
+_ENV_ANY_VALUE = frozenset("""GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
+GIT_TERMINAL_PROMPT GIT_OPTIONAL_LOCKS GIT_MERGE_AUTOEDIT GIT_CONFIG_NOSYSTEM GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM
+GIT_CONFIG_COUNT GIT_LITERAL_PATHSPECS GIT_NOGLOB_PATHSPECS""".split())
+_ENV_SAFE_VALUES = {"GIT_PAGER": _SAFE_ENV_VALUES, "GIT_EDITOR": _SAFE_ENV_VALUES, "GIT_SEQUENCE_EDITOR": _SAFE_ENV_VALUES,
+                    "PAGER": _SAFE_ENV_VALUES, "EDITOR": _SAFE_ENV_VALUES, "VISUAL": _SAFE_ENV_VALUES, "BROWSER": _SAFE_ENV_VALUES}
+_ENV_NON_GIT_EXEC = frozenset("""SSH_ASKPASS ASKPASS LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH PAGER EDITOR
+VISUAL BROWSER""".split())
+_TRACE_PLAIN = frozenset({"", "0", "1", "2", "true", "false", "yes", "no", "on", "off"})
+
+
 def _env_exec(name: str, value: str, ctx: "_Ctx") -> None:
-    """Environment assignment (prefix, standalone, ``export``, ``env X=..``) that makes a later Git run a program."""
+    """Environment assignment (prefix, standalone, ``export``, ``env X=..``) seen before a Git command.
+
+    Default-ASK for every ``GIT_*`` variable (the Git environment is a program-running / repository-redirecting surface:
+    GIT_CONFIG_PARAMETERS, GIT_EXEC_PATH, GIT_TEMPLATE_DIR, GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY, GIT_SSH*,
+    GIT_ASKPASS, GIT_PROXY_COMMAND, GIT_EXTERNAL_DIFF, GIT_ALLOW_PROTOCOL, GIT_TRACE=/path ...) unless it is on the explicit
+    harmless allowlist above (identity / prompt / lock / ceiling variables, GIT_CONFIG_COUNT/VALUE_n, a harmless pager/editor,
+    GIT_TRACE* with a plain 0/1/true value, GIT_CONFIG_GLOBAL/SYSTEM=/dev/null, GIT_CONFIG_KEY_n with a literal non-exec key)."""
     n = name.rstrip("+")
-    if n in EXEC_ENV and value.strip().strip("'\"") not in _SAFE_ENV_VALUES:
+    v = value.strip().strip("'\"")
+    dyn = value == "$dynamic"
+    if n.startswith("GIT_CONFIG_KEY_"):
+        if dyn or _exec_config(v, "x") or v.lower().startswith("protocol."):
+            ctx.exec_env.add(n)
+    elif n.startswith("GIT_CONFIG_VALUE_") or n in _ENV_ANY_VALUE:
+        pass
+    elif n in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"):
+        if v != "/dev/null":
+            ctx.exec_env.add(n)
+    elif n.startswith("GIT_TRACE"):
+        if dyn or v.lower() not in _TRACE_PLAIN:
+            ctx.exec_env.add(n)
+    elif n in _ENV_SAFE_VALUES:
+        if dyn or v not in _ENV_SAFE_VALUES[n]:
+            ctx.exec_env.add(n)
+    elif n.startswith("GIT_") or n in _ENV_NON_GIT_EXEC:
         ctx.exec_env.add(n)
-    elif n.upper().startswith("GIT_CONFIG_KEY_") and _EXEC_CONFIG.match(value.strip()):
-        ctx.exec_env.add(n)
-    elif n in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG") and _norm_path(value) in ctx.written:
+    elif n in ("HOME", "XDG_CONFIG_HOME") and not dyn and _norm_path(v) in ctx.written:
         ctx.exec_env.add(n)
 
 
@@ -1207,9 +1294,20 @@ def _h_submodule(rest, ctx, cands):
                     ctx.add("shell-git")
             else:
                 _run_string(" ".join(w.text for w in cmd_words), ctx)
+            _runs_program(cmd_words, "git submodule foreach", ctx)
         return
     if o.pos and o.pos[0] == "deinit" and ("f" in o.shorts or o.lopt("force", 3)):
         ctx.add("submodule-deinit-force")
+
+
+def _runs_program(words: List[Word], tool: str, ctx: _Ctx) -> None:
+    """``bisect run CMD`` / ``submodule foreach CMD``: Git executes CMD itself, so a pre-approved ``git ...:*`` rule would
+    cover an arbitrary program.  Git and plain text tools are analysed elsewhere; anything else asks."""
+    head = words[0]
+    first = head.text.split()[0] if head.text.split() else ""
+    base = posixpath.basename(first)
+    if head.dyn or not (base == "git" or base in _TEXT_TOOLS):
+        ctx.add("exec-option", tool=tool, opt=f"runs `{first[:40] or '?'}` for every revision / submodule")
 
 
 def _h_bisect(rest, ctx, cands):
@@ -1218,6 +1316,7 @@ def _h_bisect(rest, ctx, cands):
             sub_words = rest[i + 1:]
             if sub_words:
                 _words(sub_words, None, ctx, ctx.depth + 1)
+                _runs_program(sub_words, "git bisect run", ctx)
             return
         if not w.text.startswith("-"):
             return
