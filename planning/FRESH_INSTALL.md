@@ -3,13 +3,18 @@
 Goal: install Git Warp the way a user would, without the development checkout and without touching the user's normal Claude configuration.
 
 **Method.** A clean `git archive` export of the commit under test was placed in a throwaway directory containing
-`.claude-plugin/marketplace.json` (a local marketplace listing the plugin with `"source": "./git-warp"`). Everything below ran with an isolated
-`CLAUDE_CONFIG_DIR` (so nothing was written to `~/.claude`), Claude Code 2.1.285 on macOS.
+`.claude-plugin/marketplace.json` (a local marketplace listing the plugin with `"source": "./git-warp"`). Everything ran with an isolated
+`CLAUDE_CONFIG_DIR` (nothing was written to `~/.claude`), Claude Code 2.1.285 on macOS. The commit below is the tip at the time of the run;
+only documentation and planning files changed afterwards.
+
+## Install flow
 
 ```
-commit under test: 807f052057240838571141ab0984ff73982d9efd   (the plugin directory has not changed in a way that affects installation since; the later commits touch guard rules, skills text and docs, and every later full run loads a fresh export)
-== validate marketplace
-Validating marketplace manifest: /private/tmp/gw-live/fi/mkt/.claude-plugin/marketplace.json
+commit under test: c096098bf3c50815e167e9395d935365d6ae0bee
+== validate marketplace (strict)
+
+✔ Validation passed
+== validate plugin (strict)
 
 ✔ Validation passed
 == marketplace add
@@ -33,18 +38,28 @@ Component inventory
   Agents (3)  git-history-analyst, git-risk-analyst, git-forensic-analyst
   Hooks (4)  SessionStart, PreToolUse, PostToolUse, Stop  (harness-only — no model context cost)
   MCP servers (0)
-  LSP servers (0)
-
-Projected token cost
 ```
 
-**Installed copy exercised from an unrelated directory** (cwd `/`, `CLAUDE_PLUGIN_ROOT` set to the installed cache path
-`.../plugins/cache/gw-release-check/git-warp/0.1.0`):
+## Installed copy exercised from an unrelated directory
 
-- the guard hook answered `permissionDecision: "deny"` for `git reset --hard` in a throwaway repository;
-- `warp.py xray --repo <repo>` returned the full evidence JSON;
-- every command in the installed `hooks/hooks.json` is `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hook_*.py"`, so nothing depends on the developer's cwd.
+cwd `/`, `CLAUDE_PLUGIN_ROOT` set to the installed cache path, a throwaway repository as the hook's `cwd`:
 
-**What this does not prove.** Installing and *running* the installed copy inside a live Claude session requires the user's authenticated
-configuration, so the live runs (`planning/LIVE_ACCEPTANCE.md`) load the same export with `--plugin-dir` for the session instead of installing
-it. The install flow and the live behaviour were therefore verified separately, on the same artifact layout.
+```
+== installed root: plugins/cache/gw-release-check/git-warp/0.1.0
+guard from /: deny
+xray from /: ok, branch main
+  SessionStart python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hook_session_start.py"
+  PreToolUse python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hook_git_guard.py"
+  PostToolUse python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hook_post_tool.py"
+  Stop python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hook_stop.py"
+```
+
+- the installed guard hook answers `deny` for `git reset --hard`;
+- the installed CLI returns evidence JSON;
+- every hook command is `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hook_*.py"`, so nothing depends on the developer's working directory.
+
+## What this does not prove
+
+Running the *installed* copy inside a live Claude session needs the user's authenticated configuration, which an isolated config directory does
+not have. The live runs (`planning/LIVE_ACCEPTANCE.md`) therefore load the same export with `--plugin-dir` for the session instead of installing it:
+the install flow and the live behaviour were verified separately, on the same artifact layout.
