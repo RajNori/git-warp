@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from ..core import git, storage
+from ..core import git, revisions, storage
 from ..core.config import Config, load_config
 from ..core.paths import classify_path
 from ..core.redact import redact
@@ -438,8 +438,10 @@ def ensure_indexed(cwd, max_commits: Optional[int] = None, *, time_budget: Optio
 def _run(conn, cwd, head, max_commits, rebuild, shallow, deadline, res) -> None:
     st = _state(conn)
     prev_head = st.get("head") or None
+    if prev_head is not None and not revisions.is_full_oid(prev_head):
+        prev_head = None        # tampered/garbled database value must never reach Git: treat as "no prior index" (full rebuild)
     prev_complete = st.get("complete") == "1"
-    prev_max = int(st["max_commits"]) if st.get("max_commits", "").isdigit() else None
+    prev_max = int(st["max_commits"]) if st.get("max_commits", "").isascii() and st.get("max_commits", "").isdigit() else None
     left = lambda: max(1.0, deadline - time.monotonic())  # noqa: E731
 
     mode, reason = "incremental", None
