@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SKILLS = sorted((ROOT / "skills").glob("*/SKILL.md"))
+PLUGIN = ROOT / "plugin"
+SKILLS = sorted((PLUGIN / "skills").glob("*/SKILL.md"))
 WARP_ENTRY = 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*)'
 
 # The only raw git forms a skill may pre-approve.  Every one is a read-only query form: `branch` is limited to its

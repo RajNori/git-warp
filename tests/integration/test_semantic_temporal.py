@@ -6,7 +6,8 @@ from pathlib import Path
 from gitwarp.semantic import temporal
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-WARP = str(ROOT / "scripts" / "warp.py")
+PLUGIN = ROOT / "plugin"
+WARP = str(PLUGIN / "scripts" / "warp.py")
 
 GUARDED = "def charge(x):\n    validate_amount_strictly(x)\n    return x * 2\n"
 UNGUARDED = "def charge(x):\n    return x * 2\n"

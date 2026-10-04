@@ -6,9 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tests.conftest import ROOT, _ENV
+from tests.conftest import PLUGIN, _ENV
 
-WARP = str(ROOT / "scripts" / "warp.py")
+WARP = str(PLUGIN / "scripts" / "warp.py")
 
 
 def warp(*argv, cwd=None):
@@ -53,6 +53,6 @@ def test_non_repo_and_usage_json(tmp_path):
 
 
 def test_history_package_never_spawns_processes():
-    src = "".join(p.read_text() for p in (ROOT / "scripts" / "gitwarp" / "history").glob("*.py"))
+    src = "".join(p.read_text() for p in (PLUGIN / "scripts" / "gitwarp" / "history").glob("*.py"))
     assert "subprocess" not in src and "shell=True" not in src and "eval(" not in src and "exec(" not in src
     assert "os.system" not in src

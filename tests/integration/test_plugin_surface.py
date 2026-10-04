@@ -17,11 +17,12 @@ import pytest
 from tests.conftest import _ENV
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "scripts"
+PLUGIN = ROOT / "plugin"
+SCRIPTS = PLUGIN / "scripts"
 WARP = SCRIPTS / "warp.py"
-SKILLS = {p.parent.name: p for p in sorted((ROOT / "skills").glob("*/SKILL.md"))}
-AGENTS = {p.stem: p for p in sorted((ROOT / "agents").glob("*.md"))}
-HOOKS = json.loads((ROOT / "hooks" / "hooks.json").read_text())
+SKILLS = {p.parent.name: p for p in sorted((PLUGIN / "skills").glob("*/SKILL.md"))}
+AGENTS = {p.stem: p for p in sorted((PLUGIN / "agents").glob("*.md"))}
+HOOKS = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())
 
 # feature -> (skill or None, warp.py command(s), hook script or None)
 FEATURES = {
@@ -87,10 +88,10 @@ def test_every_python_file_compiles():
 
 
 def test_plugin_manifest():
-    pj = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
+    pj = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text())
     assert pj["name"] == "git-warp" and pj["version"] == "0.1.0"
     assert pj["description"] and pj["license"]
-    assert not (ROOT / ".claude-plugin" / "marketplace.json").exists(), "nothing is published; docs/marketplace.md says so"
+    assert not (PLUGIN / ".claude-plugin" / "marketplace.json").exists(), "nothing is published; docs/marketplace.md says so"
 
 
 def test_hooks_json_shape_and_paths():
@@ -106,7 +107,7 @@ def test_hooks_json_shape_and_paths():
     for ev, cmd, _, _ in hook_commands():
         m = re.fullmatch(r'python3 "\$\{CLAUDE_PLUGIN_ROOT\}/(scripts/hook_[a-z_]+\.py)"', cmd)
         assert m, f"{ev}: script path must use ${{CLAUDE_PLUGIN_ROOT}} and be quoted: {cmd}"
-        assert (ROOT / m.group(1)).is_file()
+        assert (PLUGIN / m.group(1)).is_file()
         assert str(ROOT) not in cmd and "~" not in cmd
 
 
@@ -191,7 +192,7 @@ def test_agents_reference_only_real_commands():
 
 
 def test_readme_feature_sections_name_a_real_command_and_skill():
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
     start = readme.index("## Features")
     section = readme[start:]
     parts = re.split(r"^### ", section, flags=re.M)[1:]
@@ -210,7 +211,7 @@ def test_readme_feature_sections_name_a_real_command_and_skill():
 def test_no_skill_claims_a_missing_command():
     """Every ``warp.py <word>`` anywhere in skills/agents/README must be a real command (no prose-only features)."""
     texts = [p.read_text(encoding="utf-8") for p in list(SKILLS.values()) + list(AGENTS.values())]
-    texts.append((ROOT / "README.md").read_text(encoding="utf-8"))
+    texts.append((PLUGIN / "README.md").read_text(encoding="utf-8"))
     for t in texts:
         for w in warp_refs(t):
             assert w in COMMANDS, w

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from gitwarp.memory import recorder, state
 
-SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "..", "scripts")
+SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "..", "plugin", "scripts")
 
 
 def sd(repo):

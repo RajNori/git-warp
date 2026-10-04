@@ -167,7 +167,7 @@ class Acceptance:
 
     def _export(self):
         self.plugin.mkdir()
-        arc = subprocess.run(["git", "archive", "HEAD"], cwd=ROOT, capture_output=True, check=True).stdout
+        arc = subprocess.run(["git", "archive", "HEAD:plugin"], cwd=ROOT, capture_output=True, check=True).stdout
         subprocess.run(["tar", "-x", "-C", str(self.plugin)], input=arc, check=True)
         (self.testplug / ".claude-plugin").mkdir(parents=True)
         (self.testplug / "skills/preapprove-test").mkdir(parents=True)

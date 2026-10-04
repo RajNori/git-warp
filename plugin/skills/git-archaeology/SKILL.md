@@ -7,7 +7,7 @@ allowed-tools: Read, Grep, Glob, Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/war
 
 # git-archaeology
 
-> Run `warp.py` from the repository directory: `--repo` defaults to the current directory. Do **not** pass `--repo "$PWD"` (or any shell expansion): Claude Code cannot analyse it statically and would prompt even though `warp.py` is pre-approved. If you must name another repository, use a literal absolute path.
+> Run `warp.py` from the repository directory: `--repo` defaults to the current directory. Do **not** pass `--repo` a shell variable or any other shell expansion: Claude Code cannot analyse it statically and would prompt even though `warp.py` is pre-approved. If you must name another repository, use a literal absolute path.
 
 Reconstruct how code came to be from Git evidence. Separate what git records (FACT) from what is guessed from it (INFERENCE), and admit what git cannot tell (UNKNOWN). Read-only.
 

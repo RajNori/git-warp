@@ -5,8 +5,8 @@ below were produced by real runs unless marked otherwise.
 
 ## Installation and loading
 
-**The skills do not appear.** Load the plugin explicitly: `claude --plugin-dir /path/to/git-warp`. Check the manifest
-with `claude plugin validate /path/to/git-warp`. Git Warp is not on any marketplace, so
+**The skills do not appear.** Load the plugin explicitly: `claude --plugin-dir /path/to/git-warp/plugin`. Check the manifest
+with `claude plugin validate /path/to/git-warp/plugin`. Git Warp is not on any marketplace, so
 `claude plugin install git-warp` cannot find it ([marketplace.md](marketplace.md)).
 
 **What are the skills called?** In a headless session they were listed as `git-warp:git-xray`,

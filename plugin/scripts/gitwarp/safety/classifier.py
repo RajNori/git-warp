@@ -1475,7 +1475,7 @@ _ECHO_OPT = re.compile(r"^-[neE]+$")
 
 
 def _stdin_scripts(cmd: Optional[Cmd]) -> List[str]:
-    """Literal text that is piped / here-doc'd into ``cmd`` (for ``echo ... | bash``)."""
+    """Literal text that is piped / here-doc'd into ``cmd`` (for literal text echoed into a shell)."""
     out: List[str] = []
     if cmd is None:
         return out
@@ -1744,7 +1744,7 @@ def _shell(name: str, args: List[Word], cmd: Optional[Cmd], ctx: _Ctx, depth: in
             ctx.add("stdin-script")
     elif operand is not None and operand.dyn and ctx.mentions_git and (
             operand.text == "<(...)" or ctx.var_state(_var_name(operand) or "") is _TAINT or operand.subs):
-        ctx.add("stdin-script")                     # `bash <(echo '...git...')`: script text is computed
+        ctx.add("stdin-script")                     # process substitution into a shell: script text is computed
 
 
 def _find(args: List[Word], cmd, ctx: _Ctx, depth: int) -> None:

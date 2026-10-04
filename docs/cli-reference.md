@@ -1,7 +1,7 @@
 # CLI reference: `scripts/warp.py`
 
 ```
-python3 /path/to/git-warp/scripts/warp.py <command> [args]
+python3 /path/to/git-warp/plugin/scripts/warp.py <command> [args]
 ```
 
 Inside Claude Code the skills call it as `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" <command> ...`.

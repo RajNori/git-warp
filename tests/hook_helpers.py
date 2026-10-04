@@ -5,7 +5,7 @@ import sys
 import time
 from pathlib import Path
 
-SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+SCRIPTS = Path(__file__).resolve().parent.parent / "plugin" / "scripts"
 
 
 def run_hook(name, event, cwd, raw=None):

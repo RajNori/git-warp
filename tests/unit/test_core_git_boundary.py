@@ -3,7 +3,8 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "scripts"
+PLUGIN = ROOT / "plugin"
+SCRIPTS = PLUGIN / "scripts"
 CORE_GIT = SCRIPTS / "gitwarp" / "core" / "git.py"
 REVISIONS = SCRIPTS / "gitwarp" / "core" / "revisions.py"
 

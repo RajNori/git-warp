@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-AGENTS = sorted((ROOT / "agents").glob("*.md"))
+PLUGIN = ROOT / "plugin"
+AGENTS = sorted((PLUGIN / "agents").glob("*.md"))
 EXPECTED = {"git-forensic-analyst", "git-history-analyst", "git-risk-analyst"}
 READ_ONLY_TOOLS = {"Read", "Grep", "Glob"}
 MUTATING_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "Agent", "Task"}
