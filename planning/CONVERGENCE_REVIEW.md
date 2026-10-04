@@ -3,7 +3,7 @@
 - **Reviewer:** Codex CLI 0.160.0 (`codex exec`, workspace-write sandbox confined to a disposable clone; no tracked file was modified by the reviewer in any round).
 - **Process:** six rounds. Round 1 reviewed `origin/warp/phoenix..warp/convergence` (84 files). Each later round re-attacked the previous round's fixes and probed for regressions on the incremental diff. Every finding was reproduced by the reviewer against real Git or a real shell before it was reported; every fix was then checked by the implementation owner against a real-Git/shell regression test.
 - **Final state:** round 6 reported **no Critical or High issue**; every earlier Critical/High/Medium finding is resolved (table below). No finding was dismissed as false.
-- **Severity totals across rounds:** Critical 0. High 9 reported, 9 resolved. Medium 2 reported, 2 resolved. Low/Uncertain 0 reported as findings.
+- **Severity totals across rounds** (an item that a later round re-opened is counted again, as the table shows): Critical 0; High 10 reported, 10 resolved; Medium 3 reported, 3 resolved; Low/Uncertain 0 reported as findings.
 - **Not verified by the reviewer in any round:** behaviour inside a live Claude Code host (covered by `planning/LIVE_ACCEPTANCE.md`), non-macOS platforms, and the five Unix-socket fixture tests (its sandbox denies socket binds; they pass in the project's own runs).
 
 ## Findings and resolutions
