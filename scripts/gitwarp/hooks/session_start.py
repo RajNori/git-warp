@@ -12,8 +12,12 @@ import time
 
 from ..core import git
 from ..core.config import load_config
-from ..core.output import additional_context, read_hook_event, write_hook
+from ..core.output import additional_context
 from ..memory import index, recorder, snapshot, state
+from ._runtime import HookDeadline, cwd_of, deadline, emit, read_event
+
+BUDGET_S = 12.0           # hooks.json allows 15 s
+MAX_CONTEXT_CHARS = 2500  # the injected context stays small whatever the repository contains
 
 INDEX_BUDGET_S = 5.0
 HOOK_INDEX_CAP = 1000          # bound for the first (cold) automatic index
@@ -80,29 +84,39 @@ def _auto_index(cwd, cfg) -> None:
         state.update(sdir, auto_index_skip_until=time.time() + INDEX_RETRY_AFTER_S)
 
 
+def _bound(text: str) -> str:
+    text = "".join(ch if ch == "\n" or ch >= " " and ch != "\x7f" else " " for ch in text)
+    return text if len(text) <= MAX_CONTEXT_CHARS else text[:MAX_CONTEXT_CHARS - 1] + "\u2026"
+
+
 def main() -> int:
     try:
-        event = read_hook_event()
-        if not event:  # malformed/empty stdin: no side effects, no output
-            return 0
-        cwd = event.get("cwd") if isinstance(event.get("cwd"), str) and event.get("cwd") else os.getcwd()
-        root = git.repo_root(cwd)
-        if root is None:
-            return 0
-        cfg = load_config(root)
-        text = build_context(cwd, cfg)
+        with deadline(BUDGET_S):
+            _run()
+    except (Exception, HookDeadline):
+        pass
+    return 0
+
+
+def _run() -> None:
+    event = read_event()
+    if not event:  # malformed/empty/oversized stdin: no side effects, no output
+        return
+    cwd = cwd_of(event) or os.getcwd()
+    root = git.repo_root(cwd)
+    if root is None:
+        return
+    cfg = load_config(root)
+    text = _bound(build_context(cwd, cfg))
+    emit(additional_context("SessionStart", text))   # flushed first: later bookkeeping may only cost time, not the context
+    try:
         if cfg.recorder_enabled:
             recorder.record(cwd, {**event, "hook_event_name": "SessionStart"})
         if cfg.memory_enabled:
-            try:
-                index.record_session(cwd, str(event.get("session_id") or ""), git.current_branch(cwd), git.head_sha(cwd))
-                _auto_index(cwd, cfg)
-            except Exception:
-                pass
-        write_hook(additional_context("SessionStart", text))
+            index.record_session(cwd, str(event.get("session_id") or "")[:128], git.current_branch(cwd), git.head_sha(cwd))
+            _auto_index(cwd, cfg)
     except Exception:
         pass
-    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover
