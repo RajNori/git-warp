@@ -11,8 +11,9 @@ Git Warp is a [Claude Code](https://claude.com/claude-code) plugin. It has two h
   JSON (state, risk signals, lost-commit candidates, history timelines, import graphs, conflict ancestry, a local
   history index). Skills tell Claude how to run that CLI and how to interpret and present the result.
 
-> Status: version `0.1.0` (see `.claude-plugin/plugin.json`). **Not published to any marketplace yet.** Install it
-> locally as described below. See [CHANGELOG.md](CHANGELOG.md) and [docs/marketplace.md](docs/marketplace.md).
+> Status: version `0.1.0` (see `.claude-plugin/plugin.json` and [CHANGELOG.md](CHANGELOG.md)). Validated on macOS only;
+> Linux is not yet validated and Windows is unsupported for this release ([docs/platforms.md](docs/platforms.md)).
+> Not listed in any public marketplace: install from this repository as described below.
 
 ## Contents
 
@@ -42,11 +43,12 @@ Git Warp is a [Claude Code](https://claude.com/claude-code) plugin. It has two h
 
 What was actually verified: Python 3.13.2, git 2.53.0, SQLite 3.51.0 (the version Python reports), macOS (Darwin).
 Reading the code shows a few lower bounds (the walrus operator, so Python 3.8+; `git worktree list --porcelain -z`,
-so git 2.36+; POSIX `fcntl` locking is used when available), but older versions and Windows were **not tested**.
+so git 2.36+; POSIX `fcntl` locking is used when available), but older versions, Linux and Windows were **not
+tested**; Windows is unsupported for this release. See [docs/platforms.md](docs/platforms.md).
 
 ## Installation
 
-### Local (the only supported path today)
+### Local
 
 Clone the repository and point Claude Code at it for one session:
 
@@ -56,17 +58,22 @@ claude --plugin-dir /path/to/git-warp
 ```
 
 `.claude-plugin/plugin.json` is the manifest; `hooks/hooks.json`, `skills/` and `agents/` are discovered from the
-plugin root. `claude plugin validate /path/to/git-warp` accepts the manifest (that was the result at the recovery
-checkpoint and again while writing these docs).
+plugin root. `claude plugin validate /path/to/git-warp --strict` passes.
 
 ### Marketplace
 
-Git Warp is **not published to any marketplace**. Per `claude plugin install --help`, installation from a
-marketplace uses `claude plugin install <plugin>` or `claude plugin install <plugin>@<marketplace>`, and per
-`claude plugin marketplace --help` marketplaces are managed with `claude plugin marketplace add|list|remove|update`
-(`add` takes "a URL, path, or GitHub repo"). Until a marketplace lists `git-warp`, those commands cannot install it.
-This repository contains no `marketplace.json`. The publishing checklist is in
-[docs/marketplace.md](docs/marketplace.md).
+Git Warp is **not listed in any public marketplace**, and this repository contains no `marketplace.json`. The
+install-as-a-user flow was verified with a local marketplace: put a copy of the plugin in a directory that has
+`.claude-plugin/marketplace.json` listing it with `"source": "./git-warp"`, then
+
+```bash
+claude plugin marketplace add /path/to/that/directory
+claude plugin install git-warp@<marketplace-name>
+claude plugin details git-warp@<marketplace-name>   # 10 skills, 3 agents, 4 hooks
+```
+
+That run used an isolated `CLAUDE_CONFIG_DIR` and `claude plugin validate` accepted the result. Details and the
+publishing checklist: [docs/marketplace.md](docs/marketplace.md).
 
 ### Skill names
 
@@ -83,7 +90,7 @@ First steps are in [docs/getting-started.md](docs/getting-started.md).
 |---|---|---|
 | 4 hooks | `hooks/hooks.json`, `scripts/hook_*.py` | `PreToolUse` guard for `Bash`; `SessionStart` context; `PostToolUse` flight recorder; `Stop` change report |
 | 10 skills | `skills/*/SKILL.md` | Drive the CLI and shape the answer (see the table below) |
-| 3 agents | `agents/*.md` | Read-only analysts Claude can delegate to: `git-forensic-analyst`, `git-history-analyst`, `git-risk-analyst` |
+| 3 agents | `agents/*.md` | Analysts Claude can delegate to: `git-forensic-analyst`, `git-history-analyst`, `git-risk-analyst`. Their tools are `Read, Grep, Glob` only: they have **no shell** and analyse the CLI output the calling assistant passes in |
 | 1 CLI | `scripts/warp.py` | JSON evidence: `xray pr rescue archaeology bisect commits blast conflict temporal memory guard` |
 
 The CLI is read-only except for two documented cases: `rescue preserve` creates one new branch, and
@@ -103,8 +110,9 @@ A `PreToolUse` hook on the `Bash` tool (`scripts/hook_git_guard.py` -> `gitwarp/
 `gitwarp/safety/{tokenizer,classifier}.py`). It tokenizes the command string (quotes, `;`, `&&`, `||`, pipes,
 subshells, `$( )`, backticks, `bash -c`, literal `eval`, `xargs`, `find -exec`, wrappers such as `sudo`/`env`,
 `git -C`, `git -c`) and classifies every Git invocation it finds, returning the most severe verdict:
-**deny** (blocked), **ask** (the user must confirm) or **allow** (silent). If the guard itself errors, a command
-that mentions `git` becomes **ask**. It also exposes a debug command that never runs anything:
+**DENY** (blocked), **ASK** (the user must confirm) or **DEFER** (no objection: ordinary Claude permissions decide;
+it is *not* an approval). Dynamic expressions that could conceal a destructive operation (`git reset $(echo --hard)`)
+are ASK, not DEFER. If the guard itself errors, a command that mentions `git` becomes **ask**. It also exposes a debug command that never runs anything:
 
 ```bash
 python3 scripts/warp.py guard check "git reset --hard HEAD~1"
@@ -203,15 +211,17 @@ co-change is correlation; authors are contribution history, not ownership. Examp
 
 ## Configuration
 
-Optional file `.claude/git-warp.local.md` in the repository root (git-ignored by this repo's own `.gitignore`
+Optional files `~/.claude/git-warp.local.md` (user) and `.claude/git-warp.local.md` in the repository root. Policy is
+built from the built-in floor, then the user file, then the repository file, and a repository can only tighten it
+(see [docs/configuration.md](docs/configuration.md)). The repository file lives in the repository root (git-ignored by this repo's own `.gitignore`
 pattern `.claude/*.local.md`; add the same to yours if you do not want it committed). It uses a small YAML-like
 frontmatter parsed by `core/config.py` (scalars, inline lists `[a, b]`, and `- item` block lists). Text after the
 closing `---` is ignored. Unknown keys and invalid values are ignored with a warning and the default is kept.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `protected_branches` | list of globs | `main, master, develop, development, production, prod, release` | Branches the guard protects (force push, delete, reset, `update-ref`). An empty list is rejected and the default kept |
-| `safety_mode` | `standard` or `strict` | `standard` | In `strict`, history-rewriting `ask` verdicts become `deny` |
+| `protected_branches` | list of globs | `main, master, develop, development, production, prod, release` | Branches the guard protects (force push, forced fetch, delete, reset, `update-ref`). Your entries are **added** to the defaults; an empty list is ignored |
+| `safety_mode` | `standard` or `strict` | `standard` | In `strict`, history-rewriting `ask` verdicts become `deny`; the strictest of user and repository wins |
 | `sensitive_paths` | list of globs | `[]` | Extra paths tagged `sensitive` |
 | `ignored_paths` | list of globs | `[]` | Extra paths tagged `generated` (excluded from several analyses) |
 | `test_paths` | list of globs | `[]` | Extra paths tagged `test` |
@@ -245,7 +255,8 @@ Booleans accept `true/yes/on` and `false/no/off`. Full reference: [docs/configur
 
 The guard classifies Git invocations found in a Bash command string. Verdicts below were produced with
 `python3 scripts/warp.py guard check "<cmd>" --branch <branch>` (standard mode, default protected branches unless
-noted). `deny` blocks the command; `ask` prompts the user; everything not listed is `allow`.
+noted). `deny` blocks the command; `ask` prompts the user; everything not listed is `defer` (no objection from Git Warp;
+Claude Code's ordinary permission rules decide, and a `deny`/`ask` is never overridden by a pre-approved `Bash(...)` rule).
 
 | Decision | Command (examples) | Rule |
 |---|---|---|
@@ -270,6 +281,12 @@ noted). `deny` blocks the command; `ask` prompts the user; everything not listed
 | deny | the same destructive Git forms reached through variables or unknown launchers, e.g. `$GIT reset --hard`, `GIT=git; $GIT reset --hard`, `git reset --hard$IFS`, `arch git reset --hard`, `flock x git clean -fd` (literal `git` word in the tail of an unknown launcher is classified) | `reset-hard`, `clean-force`, ... |
 | ask | `git push --force` / `-f` / `--force-with-lease` to a non-protected branch | `push-force` |
 | ask | `git push --delete <non-protected>` | `push-delete` |
+| deny | `git fetch --force origin main:main`, `git fetch origin +refs/heads/*:refs/heads/*` (forced fetch into a protected local branch) | `fetch-force-protected` |
+| ask | forced fetch into another local branch; `git pull --force` / `-f` | `fetch-force-local` |
+| ask | `git reset $(echo --hard)`, ``git reset `echo --hard` ``, `git clean $(echo -fdx)`: a dynamic word in an option, subcommand or executable position of a destructive-capable subcommand | `dynamic-argument` |
+| ask | `echo 'git reset --hard' > gen.sh && bash gen.sh` (a script written and run in one command) | `generated-script` |
+| ask | `bash <(echo '...')` | `stdin-script` |
+| ask | `git x`, `git nuke`, `git st`: a first word that is not a known Git subcommand may be a configured alias | `unknown-subcommand` |
 | ask | `git rebase ...` | `rebase` |
 | ask | `git commit --amend` | `commit-amend` |
 | ask | `git branch -D <b>` | `branch-force-delete` |
@@ -291,7 +308,7 @@ noted). `deny` blocks the command; `ask` prompts the user; everything not listed
 | ask | `git config alias.*`, `git -c alias.*=`, `GIT_CONFIG_KEY_n=alias.*` | `alias-config`, `alias-inline`, `env-alias` |
 | ask | `git remote set-url` / `remove` | `remote-modify` |
 | ask | unresolved `$VAR` as Git subcommand or as `reset`/`clean` argument; computed `eval`/`bash -c` that mentions git; over-long or too deeply nested input that mentions git | `unresolved-subcommand`, `reset-unresolved`, `clean-unresolved`, `eval-git`, `shell-git`, `too-complex` |
-| allow | `git status`, `git log`, `git add`, `git commit`, `git push` (no force), `git switch -c`, `git stash push`, `git gc`, `git branch -d`, `git clean -n`, `git reset --soft` | none |
+| defer | `git status`, `git log`, `git add`, `git commit`, `git push` (no force), `git switch -c`, `git stash push`, `git gc`, `git branch -d`, `git clean -n` / `-nfd` (dry runs), `git reset --soft`, `git log $(git merge-base HEAD main)..HEAD` | none |
 
 With `safety_mode: strict`, these `ask` rules become `deny`: `rebase`, `commit-amend`, `branch-force-delete`,
 `branch-force-move`, `push-force`, `push-delete`, `reset-protected`, `update-ref-protected`. The `deny` rules do not
@@ -299,9 +316,10 @@ depend on the mode.
 
 Things the guard allows that you might expect it to stop (each verified with `guard check`, see
 [Limitations](#limitations)): `git checkout -- <one file>`, `git restore <one file>` (discarding one named file's
-edits), `git rm -f <one file>`, `git fetch -f`, `git pull -f`, `git checkout -B topic` (non-protected literal
-target), `git reset <rev>` or `git reset --soft` off a protected branch, and computed forms such as
-`git reset $(echo --hard)` and `cmd="git reset --hard"; $cmd`.
+edits), `git rm -f <one file>`, `git fetch -f origin main` (no `src:dst` refspec), `git checkout -B topic` (non-protected
+literal target) and `git reset <rev>` or `git reset --soft` off a protected branch. A dynamic expression the guard cannot
+resolve is never silently deferred in a destructive-capable position: `cmd="git reset --hard"; $cmd` is `deny` and
+`git reset $(echo --hard)` is `ask`.
 
 Each `deny`/`ask` message includes safer alternatives (for example `git branch rescue/pre-reset`, `git stash push -u`,
 `git clean -n`). More: [docs/safety-model.md](docs/safety-model.md) and
@@ -318,9 +336,13 @@ worktrees, never in the work tree, never committed):
 | `flight-recorder.jsonl` (+ `.1` after rotation) | Redacted tool-call metadata, see [Flight Recorder](#flight-recorder-hooks-memory-sessions) |
 | `state.json` | Small bookkeeping (last compaction time, last session id, last report hash, auto-index back-off) |
 
+The directory is created `0700` and every file `0600`; a symlink, FIFO, socket, device or unexpected directory in place of a
+state file is refused (never followed, deleted or replaced); `state.json` is replaced atomically; a corrupt `warp.db`
+is moved aside as `warp.db.corrupt` rather than deleted. See [docs/privacy.md](docs/privacy.md).
+
 Never stored by Git Warp: file contents, edit strings, prompts, tool output, environment variables, or the
-Git config. Redaction (`core/redact.py`) is applied to recorded commands; it is pattern based and can miss
-unusual secret formats. The index does contain commit author names and emails and commit subjects, because those
+Git config. Redaction (`core/redact.py`) is applied before anything is persisted and to all CLI and hook output; it is pattern based
+and can miss unusual secret formats. The index does contain commit author names and emails and commit subjects, because those
 are what it indexes. To delete the index and recorder: `python3 scripts/warp.py memory forget --yes` (removes
 `warp.db` and its sidecar files and `flight-recorder.jsonl`/`.1`; `state.json` and the `.git/git-warp/` directory
 remain, delete them by hand if you want them gone). Full details: [docs/privacy.md](docs/privacy.md).
@@ -333,7 +355,9 @@ Claude Code --hooks--> scripts/hook_*.py --> gitwarp/hooks/*      (deterministic
      +--skills--> SKILL.md tells Claude to run  python3 ${CLAUDE_PLUGIN_ROOT}/scripts/warp.py <cmd>
                   --> gitwarp/{analysis,history,semantic,memory,safety}/cli.py  (evidence as JSON)
                   Claude interprets the JSON and writes the answer
-All Git access --> gitwarp/core/git.py  (the only module that spawns `git`)
+All Git access --> gitwarp/core/git.py       (the one Git process boundary; docs/git-boundary.md)
+All revisions  --> gitwarp/core/revisions.py (the one normalisation path)
+All state I/O  --> gitwarp/core/storage.py   (the one secure-storage layer)
 ```
 
 Design rules: Python standard library only; deterministic code for safety decisions and evidence gathering, model
@@ -366,11 +390,12 @@ destructive operation. Details: [docs/architecture.md](docs/architecture.md) and
 python3 -m pytest tests -q
 ```
 
-`pytest` is not bundled; install it yourself. The current suite is reported to be **1345 passed** (the figure
-supplied to the documentation author by the project lead; it was not re-run while writing these docs). The recovery
-checkpoint (commit `da94148`) had 1070 passed, 1 warning. The suite includes unit, integration (real
-temporary repositories and the hook scripts through subprocess), security (guard bypass attempts) and
-architecture-invariant tests. Use `PYTHONDONTWRITEBYTECODE=1` if you want to avoid `__pycache__` directories.
+`pytest` is not bundled; install it yourself. Result at release: @@TEST_COUNT@@. The suite includes unit,
+integration (real temporary repositories and the hook scripts through subprocess), security (guard bypass attempts and
+hostile-repository / hostile-environment contracts), acceptance (a repository-state matrix, recovery fixtures and a
+Guardian corpus), crash/concurrency and scale tests. `tests/live/live_acceptance.py` is an opt-in runner that drives
+real headless Claude Code sessions (it costs API money and is not part of `pytest`); its record is
+[planning/LIVE_ACCEPTANCE.md](planning/LIVE_ACCEPTANCE.md). Use `PYTHONDONTWRITEBYTECODE=1` to avoid `__pycache__`.
 
 ## Troubleshooting
 
@@ -385,19 +410,22 @@ Short version (full list in [docs/troubleshooting.md](docs/troubleshooting.md)):
 
 ## Limitations
 
-- **The guard is a safety net, not a sandbox.** It only inspects the command string of the `Bash` tool. It cannot see
-  inside scripts (`./cleanup.sh`, `make clean`), arbitrary computed values (`git reset $(echo --hard)` and `cmd="git reset --hard"; $cmd` were *allowed* in test
-  runs, although simple forms such as `$GIT reset --hard` are now denied), computed `eval`, `curl ... | sh`,
-  aliases defined in your global Git config (`git nuke`), `docker exec`/`ssh` wrappers, other tools (Write/Edit,
-  MCP, IDE actions), or non-Git destruction other than `rm -rf` of a `.git` path.
+- **The guard is a safety net, not a sandbox, and it does not emulate a shell.** It only inspects the command string
+  of the `Bash` tool. It cannot see inside scripts (`./cleanup.sh`, `make clean`), values that only exist at run time,
+  `curl ... | sh`, `docker exec`/`ssh` wrappers, other tools (Write/Edit, MCP, IDE actions), or non-Git destruction other
+  than `rm -rf` of a `.git` path. Where a dynamic expression could conceal destruction it asks instead of guessing.
   Full list: [docs/guard-limitations.md](docs/guard-limitations.md).
-- Single-file discards (`git checkout -- file`, `git restore file`, `git rm -f file`), `git fetch -f`,
-  `git pull -f` and non-hard resets off protected branches are allowed.
-- `.claude/git-warp.local.md` lives in the working tree, so a repository can narrow `protected_branches`; the
-  unconditional `deny` rules do not depend on it. `core.fsmonitor`, `core.hooksPath` and repository hooks are not
-  inspected.
-- The three agents declare an unrestricted `Bash` tool; their "read-only" behaviour is stated in their prompts
-  only. Skills pre-approve `git diff/log/show`, and `--output=<file>` on those can overwrite a file (not flagged).
+- Single-file discards (`git checkout -- file`, `git restore file`, `git rm -f file`), `git clean -i` and non-hard
+  resets off protected branches are deferred (not flagged).
+- Policy: a repository's `.claude/git-warp.local.md` can only *tighten* the policy (more protected branches, stricter
+  mode); it cannot remove the built-in floor or any unconditional rule ([docs/configuration.md](docs/configuration.md)).
+- Git Warp's **own** Git calls neutralise repository-configured `core.fsmonitor`, textconv, external diff, pagers,
+  `core.hooksPath` and filters and ignore ambient `GIT_*` variables ([docs/git-boundary.md](docs/git-boundary.md) lists
+  what is *not* suppressed, e.g. `include.path`, user-level filters such as git-lfs). Raw `git` that Claude runs through
+  Bash is not covered by that boundary.
+- The three agents have no shell (Claude Code cannot scope Bash in agent frontmatter). Skills pre-approve scoped
+  read-only prefixes such as `git diff/log/show`; a prefix cannot exclude flags, so `--output=<file>` on those can
+  overwrite a file and repository-configured helpers can run when Claude runs raw `git status/diff/blame`.
 - Analyses are heuristic where they say so (clusters, "sensitive" path words such as `billing` or `auth`, missing
   tests, dependency drift, fix-like messages, co-change, hotspots). Risk levels are rule outcomes, not probabilities.
 - Shallow clones give truncated history; commands report this in `warnings`.
@@ -405,8 +433,9 @@ Short version (full list in [docs/troubleshooting.md](docs/troubleshooting.md)):
   `git gc`/`prune`.
 - Blast radius covers Python and JS/TS imports plus a generic text fallback; dynamic imports and cross-repo
   consumers are invisible.
-- Only tested on macOS with Python 3.13 and git 2.53. Windows is untested.
-- Not a published plugin yet: no marketplace listing, no release tag, version `0.1.0`.
+- Only tested on macOS with Python 3.13 and git 2.53. Linux is not yet validated; Windows is unsupported for this
+  release ([docs/platforms.md](docs/platforms.md)).
+- Not listed in a public marketplace; install from the repository (version `0.1.0`).
 - The plugin does not run your tests, bisect predicates or repository scripts.
 
 ## Documentation index
@@ -417,14 +446,14 @@ Short version (full list in [docs/troubleshooting.md](docs/troubleshooting.md)):
 - [docs/configuration.md](docs/configuration.md)
 - [docs/architecture.md](docs/architecture.md)
 - [docs/privacy.md](docs/privacy.md)
+- [docs/git-boundary.md](docs/git-boundary.md)
+- [docs/platforms.md](docs/platforms.md)
 - [docs/troubleshooting.md](docs/troubleshooting.md)
 - [docs/marketplace.md](docs/marketplace.md)
 - [examples/](examples/) (real captured outputs, trimmed)
 - [CHANGELOG.md](CHANGELOG.md)
 
-Project history: the implementation was recovered from session evidence at commit `da94148` and verified
-(1070 tests passing at that checkpoint; 1345 now); this documentation was written afterwards, as new work, from the code
-and from real runs.
+Project history and verification evidence: [CHANGELOG.md](CHANGELOG.md), [planning/](planning/).
 
 ## License
 
