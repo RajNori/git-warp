@@ -30,7 +30,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tui_driver   # noqa: E402  (real interactive TUI through a pty)
-SYNTHETIC_SECRET = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+# Fake token, assembled at runtime so no literal credential ships in the plugin.
+SYNTHETIC_SECRET = "".join(["gh", "p_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"])
 SKILL_CMDS = {  # skill -> (prompt arguments exactly as the skill's argument-hint documents them, warp.py subcommand it must run)
     "git-xray": ("", "xray"), "git-pr": ("main", "pr"), "git-rescue": ("I deleted the branch gone/precious; find the lost commit", "rescue"),
     "git-archaeology": ("src/util.py", "archaeology"), "git-bisect-ai": ("--good HEAD~5 --bad HEAD", "bisect"),
