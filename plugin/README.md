@@ -338,6 +338,11 @@ worktrees, never in the work tree, never committed):
 | `flight-recorder.jsonl` (+ `.1` after rotation) | Redacted tool-call metadata, see [Flight Recorder](#flight-recorder-hooks-memory-sessions) |
 | `state.json` | Small bookkeeping (last compaction time, last session id, last report hash, auto-index back-off) |
 
+**Personal data.** `warp.db` stores the **author names and email addresses** from your repository's `git log`
+(they power `git-archaeology`, `memory authors` and hotspot ownership). This data is copied from your own repository,
+stays on your machine, is never sent anywhere, and is removed by `memory forget --yes`. Author names are redacted for
+secret patterns like all other text; emails are stored as they appear in Git.
+
 The directory is created `0700` and every file `0600`; a symlink, FIFO, socket, device or unexpected directory in place of a
 state file is refused (never followed, deleted or replaced); `state.json` is replaced atomically; a corrupt `warp.db`
 is moved aside as `warp.db.corrupt` rather than deleted. See [docs/privacy.md](https://github.com/RajNori/git-warp/blob/main/docs/privacy.md).
@@ -471,7 +476,8 @@ Notes for the plugin directory review, covering what the automated scan flags:
 - **Hooks** run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hook_*.py"`: literal paths inside the plugin, standard library
   only, with no package installs, `npx` or `uvx`.
 - **Local storage only.** State is written under the repository's own `.git/git-warp/` with owner-only permissions,
-  and secrets are redacted before anything is stored (see [What is stored and where](#what-is-stored-and-where)).
+  and secrets are redacted before anything is stored. This includes commit author names and emails from `git log`
+  (personal data, read and stored locally, never transmitted) (see [What is stored and where](#what-is-stored-and-where)).
 
 ## License
 
