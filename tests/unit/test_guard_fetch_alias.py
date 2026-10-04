@@ -72,7 +72,7 @@ def test_unknown_subcommand_asks_as_possible_alias(cmd):
 
 @pytest.mark.parametrize("cmd", ["git --version", "git --help", "git help foo", "git -C dir status", "git -c core.pager=cat log", "git",
                                   "git -P log", "git --exec-path", "git status", "git log --oneline", "git lfs ls-files", "git svn rebase",
-                                  "git subtree add", "git flow init", "git gui", "git gitk", "git whatchanged", "git stage f",
+                                  "git subtree add", "git flow init", "git whatchanged", "git stage f",
                                   "git ls-remote origin", "git rev-list HEAD", "git cherry -v", "git maintenance run", "git sparse-checkout list"])
 def test_builtins_and_listed_externals_are_unaffected(cmd):
     assert v(cmd).decision == "defer", cmd

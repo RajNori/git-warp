@@ -23,10 +23,14 @@ subcommand (reset, clean, push, checkout, restore, branch, switch, stash, tag, r
 Such constructs are ``ask`` (or ``deny`` when the literal part already proves destruction).  Dynamic words stay
 ``defer`` in read-only Git commands (log, diff, show, status, rev-parse, merge-base, ls-files, ...) and in non-Git
 commands, and a substitution whose every command is a read-only Git command (or ``date``/``pwd``/``whoami``...) is
-treated as a harmless producer.  Variable boundary inside a destructive-capable subcommand: an UNQUOTED word that starts
-with an expansion (``$V``, ``${V}``) is word-split and may become several words including options, so it is ``ask`` in
-any position; a QUOTED one is a single word but is ``ask`` before the first positional operand (where options sit) and an
-ordinary operand after it (``git push origin "$BRANCH"`` stays ``defer``).  A variable assigned in the same command
+treated as a harmless producer.  Variable boundary inside a destructive-capable subcommand: ANY unresolved
+variable word -- quoted or not, before or after an operand -- is ``ask``, because its value may start with ``-`` (option),
+``+`` (forced refspec) or ``:`` (deletion refspec); ``BRANCH=:dev; git push origin "$BRANCH"`` deletes a remote branch.
+Exemptions: values consumed by message/file style options (``-m "$MSG"``, ``-F``, ``-t``, ``--message``, ...), anything after a
+literal ``--``, a word with a literal non-option prefix and no colon (``feature-$X``, ``refs/heads/$B``, ``HEAD~$N``),
+variables with a known static value in the same string, and read-only subcommands.  Honest trade-off: legitimate scripts such
+as ``git checkout "$BRANCH"`` or ``git push origin "$B"`` now ask every time; the guard cannot see the value and prefers the
+prompt to a silent deletion.  A variable assigned in the same command
 string is the exception: exactly one static value is substituted (never evaluated), a value assigned only from read-only
 Git output cannot be an option, an option-like / computed / multiply-assigned value is ``ask`` (or ``deny`` if the literal
 proves destruction).  Dry-run modes that Git guarantees win over any other flag (``clean -n``, ``push -n``) settle the
@@ -276,6 +280,11 @@ RULES = {
                     "`git {tool}` is given an option that creates or truncates a file ({opt}) or runs a helper program.",
                     "Read-only looking Git commands can overwrite an arbitrary path with these options.",
                     ["Print to the terminal and redirect explicitly, or review the target path first"]),
+    "exec-option": ("ask", "git option or environment that runs a helper program",
+                    "`{tool}` makes Git execute a program ({opt}): an external diff/textconv driver, an --upload-pack/--receive-pack/--exec "
+                    "helper, a launcher command, or an environment variable such as GIT_SSH_COMMAND / GIT_EXTERNAL_DIFF.",
+                    "The program is not visible to the guard and runs with your privileges; `git diff:*` style approvals do not cover it.",
+                    ["Run the plain command without the helper option", "Review the helper program first"]),
     "config-exec": ("ask", "git -c <config that runs a program>",
                     "An inline `-c {tool}` sets a Git config key that makes Git execute a program (pager, editor, fsmonitor, hooks, ...).",
                     "The program is not visible to the guard and runs with your privileges.", ["Run the Git command without the -c override"]),
@@ -439,6 +448,7 @@ class _Ctx:
         self.mentions_git = False                     # the whole command string mentions git
         self.vars: dict = {}                          # name -> [static value | _UNKNOWN | _TAINT, ...] assigned in this string
         self.written: set = set()                     # files written by redirection / tee earlier in this string
+        self.exec_env: set = set()                    # exec-bearing environment assignments seen in this string
         self.settled = False                          # a handler proved the mode harmless regardless of dynamic words (dry-run)
         self.dyn_seen: list = []                # dynamic option-position words seen by the current handler
 
@@ -574,25 +584,24 @@ def _risky_word(w: Word, ctx: "_Ctx") -> bool:
 
 
 def _uncertain_position(w: Word, seen_pos: bool, ctx: "_Ctx") -> bool:
-    """Boundary for dynamic words in a destructive-capable Git subcommand (documented in the module docstring):
-    * a command substitution that is not provably harmless, or a variable assigned an option-like / computed value -> uncertain;
-    * an UNQUOTED word that starts with an expansion (``$V``, ``${V}``, ``$A$B``) is word-split and may become several
-      words including options -> uncertain in ANY position;
-    * a QUOTED one is a single word, but before the first positional operand (where options normally sit) it can still be
-      ``--force`` -> uncertain; after a positional operand it is an operand (``git push origin "$BRANCH"``) -> not.
-    A variable with a known static value, or assigned only from read-only Git output, is provably harmless."""
+    """Boundary for dynamic words in a destructive-capable Git subcommand (documented in the module docstring).
+
+    ANY unresolved variable word -- quoted or not, before or after an operand -- is uncertain, because its value may start
+    with ``-`` (option), ``+`` (forced refspec) or ``:`` (deletion refspec): ``git push origin "$BRANCH"`` with
+    ``BRANCH=:dev`` deletes the remote branch.  Exempt (the caller never passes these here): values consumed by value
+    options (``-m "$MSG"``, ``-F``, ``-t`` ...), anything after a literal ``--``.  Exempt here: a word with a literal
+    prefix that cannot start an option / refspec and holds no ``:`` (``feature-$X``, ``refs/heads/$B``, ``HEAD~$N``), a
+    variable with a known static value, and a variable assigned only from read-only Git output."""
     if _risky_word(w, ctx):
         return True
-    if w.varexp == 0 or w.text[:1] != "$":
+    if w.varexp == 0:
         return False
     n = _var_name(w)
     if n is not None:
         st = ctx.var_state(n)
         if st is _BENIGN or isinstance(st, str):
             return False
-    elif w.subs and all(_benign_cmds(c) for c in w.subs) and w.varexp == 0:
-        return False
-    return (not w.quoted) or (not seen_pos)
+    return w.text[:1] in ("$", "-", "+", ":", "`") or ":" in w.text
 
 
 def _subst_known(words: List[Word], ctx: "_Ctx"):
@@ -679,11 +688,12 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
     for c in cfgs:
         if c.lower().startswith("alias."):
             ctx.add("alias-inline")
-        elif _EXEC_CONFIG.match(c.partition("=")[0].strip()) and not (
-                c.partition("=")[0].strip().lower().startswith(("core.pager", "pager.")) and c.partition("=")[2].strip().strip("'\"") in _SAFE_PAGERS):
+        elif _exec_config(c.partition("=")[0], c.partition("=")[2]):
             ctx.add("config-exec", tool=c.partition("=")[0].strip()[:60])
     if sub is None or info_only:
         return
+    if ctx.exec_env:
+        ctx.add("exec-option", tool="git " + (sub.text[:40] if not sub.dyn else "?"), opt="environment: " + ", ".join(sorted(ctx.exec_env)))
     if sub.dyn or sub.glob:
         ctx.add("unresolved-subcommand")
         known = ctx.var_state(_var_name(sub)) if _var_name(sub) else None
@@ -695,6 +705,9 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
     opt = _output_file_option(name, rest)
     if opt:
         ctx.add("output-file", tool=name, opt=opt)
+    xo = _exec_option(name, rest, ctx) if name != "rebase" else None
+    if xo:
+        ctx.add("exec-option", tool="git " + name, opt=xo)
     if sub_override is None and name not in GIT_BUILTINS:
         ctx.add("unknown-subcommand", tool=name[:60])
         return
@@ -740,9 +753,68 @@ def _gc_config(cfgs: List[str], ctx: _Ctx) -> None:
 
 _EXEC_CONFIG = re.compile(r"^(core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|alternaterefscommand)|pager\..+|"
                           r"diff\.(external|[^.]+\.(textconv|command))|credential(\..+)?\.helper|sequence\.editor|gpg(\..+)?\.program|"
-                          r"merge\..+\.(driver|name)|filter\..+\.(clean|smudge|process)|ssh\.variant|uploadpack\.packobjectshook|"
-                          r"core\.fsmonitor|difftool\..+\.cmd|mergetool\..+\.cmd|browser\..+\.cmd|web\.browser)$", re.I)
+                          r"gpg\.ssh\.defaultkeycommand|merge\..+\.(driver|name)|filter\..+\.(clean|smudge|process)|uploadpack\.packobjectshook|"
+                          r"remote\..+\.(uploadpack|receivepack|vcs|proxy)|sendemail\..+|difftool\..+\.cmd|mergetool\..+\.cmd|"
+                          r"browser\..+\.cmd|man\..+\.cmd|instaweb\.browser|web\.browser|http\.sslcommand)$", re.I)
 _SAFE_PAGERS = frozenset({"", "cat", "less", "more", "less -FRX", "less -R", "false", "true"})
+ALWAYS_EXEC_SUBS = frozenset("""difftool mergetool instaweb daemon http-backend http-fetch http-push credential credential-cache
+credential-gcloud credential-netrc credential-osxkeychain credential-store send-email imap-send gui gitk citool remote-ext
+receive-pack upload-pack cvsserver""".split())
+EXEC_ENV = frozenset("""GIT_EXTERNAL_DIFF GIT_SSH GIT_SSH_COMMAND GIT_PAGER GIT_EDITOR GIT_SEQUENCE_EDITOR GIT_ASKPASS SSH_ASKPASS
+GIT_PROXY_COMMAND GIT_TEMPLATE_DIR GIT_EXEC_PATH""".split())
+_SAFE_ENV_VALUES = frozenset({"", "cat", "less", "more", "true", "false", ":", "less -FRX", "less -R"})
+
+
+def _exec_config(key: str, value: str) -> bool:
+    """``key`` (``core.pager``, ``remote.o.uploadpack``, ...) makes Git run a program, and ``value`` is not a benign pager."""
+    k = key.strip()
+    if not _EXEC_CONFIG.match(k):
+        return False
+    if k.lower().startswith(("core.pager", "pager.")) and value.strip().strip("'\"") in _SAFE_PAGERS:
+        return False
+    return True
+
+
+def _exec_option(name: str, rest: List[Word], ctx: "_Ctx") -> Optional[str]:
+    """Execution-bearing option / subcommand: returns a short description or None."""
+    if name in ALWAYS_EXEC_SUBS or name.startswith("credential-"):
+        return f"git {name} launches helper programs"
+    if name == "bundle":
+        return None
+    words = []
+    for w in rest:
+        if w.text == "--":
+            break
+        if not w.dyn or w.text.startswith("-"):
+            words.append(w.text)
+    for i, t in enumerate(words):
+        if _prefix_opt(t, "ext-diff") or _prefix_opt(t, "textconv"):
+            return t.split("=", 1)[0]
+        if name in ("fetch", "pull", "push", "clone", "ls-remote", "archive", "submodule", "remote", "send-pack", "fetch-pack"):
+            for full in ("upload-pack", "receive-pack", "exec", "remote"):
+                if _prefix_opt(t, full, 3 if full != "remote" else 6) and not (full == "remote" and name != "archive"):
+                    return t.split("=", 1)[0]
+        if name == "clone":
+            if t == "-u" or (t.startswith("-u") and not t.startswith("--")) or _prefix_opt(t, "template", 4):
+                return t.split("=", 1)[0] if t.startswith("--") else "-u"
+            if t in ("-c", "--config") or _prefix_opt(t, "config", 6):
+                val = t.split("=", 1)[1] if "=" in t else (words[i + 1] if i + 1 < len(words) else "")
+                if _exec_config(val.partition("=")[0], val.partition("=")[2]):
+                    return "--config " + val.partition("=")[0]
+    return None
+
+
+def _env_exec(name: str, value: str, ctx: "_Ctx") -> None:
+    """Environment assignment (prefix, standalone, ``export``, ``env X=..``) that makes a later Git run a program."""
+    n = name.rstrip("+")
+    if n in EXEC_ENV and value.strip().strip("'\"") not in _SAFE_ENV_VALUES:
+        ctx.exec_env.add(n)
+    elif n.upper().startswith("GIT_CONFIG_KEY_") and _EXEC_CONFIG.match(value.strip()):
+        ctx.exec_env.add(n)
+    elif n in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG") and _norm_path(value) in ctx.written:
+        ctx.exec_env.add(n)
+
+
 _OUTPUT_DIFFLIKE = frozenset("""diff log show whatchanged reflog diff-tree diff-index diff-files range-diff shortlog blame rev-list
 format-patch archive stash""".split())
 
@@ -1155,6 +1227,8 @@ def _h_config(rest, ctx, cands):
         return
     if any(p.lower().startswith("alias.") for p in o.pos[:2]):
         ctx.add("alias-config")
+    elif len(o.pos) >= 2 and _exec_config(o.pos[0], o.pos[1]):
+        ctx.add("config-exec", tool=o.pos[0][:60])
 
 
 def _h_remote(rest, ctx, cands):
@@ -1183,6 +1257,7 @@ def _skip_wrapper(name: str, args: List[Word], ctx: _Ctx, depth: int):
             i += 1
             break
         if _ASSIGN.match(t) and name == "env":
+            _env_exec(t.partition("=")[0], t.partition("=")[2], ctx)
             i += 1
             continue
         if t.startswith("-") and len(t) > 1 and not args[i].dyn:
@@ -1202,6 +1277,7 @@ def _skip_wrapper(name: str, args: List[Word], ctx: _Ctx, depth: int):
     rest = args[i:]
     if name == "env":
         while rest and _ASSIGN.match(rest[0].text):
+            _env_exec(rest[0].text.partition("=")[0], rest[0].text.partition("=")[2], ctx)
             rest = rest[1:]
     return rest
 
@@ -1414,6 +1490,7 @@ def _record_assign(w: Word, ctx: _Ctx) -> None:
     if w.dyn and _VARNAME.match(value):
         vw.bare = True
     ctx.record_var(name, vw, append)
+    _env_exec(name, value if not w.dyn else "$dynamic", ctx)
 
 
 def _var_assign_dyn(w: Word) -> bool:
