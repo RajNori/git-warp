@@ -17,6 +17,10 @@ from .common import read_text, repo_state, state_warnings, status_letter
 ORDER_RANK = {"deps": 0, "migration": 1, "config": 2, "source": 3, "ui": 4, "test": 5, "infra": 6, "docs": 7}
 MAX_HUNK_FILES = 40
 MAX_HUNKS_PER_FILE = 20
+# output bounds (the plugin output is read by a model and by tools: it must stay small on huge change sets)
+MAX_LISTED_FILES = 500        # entries in ``files``
+MAX_PATHS_PER_LIST = 200      # paths inside one cluster / proposal / flag list / staging command
+MAX_MIXED = 200               # ``mixed_concerns`` entries
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$")
 
 CONCERN_MAP = (("test", "test"), ("docs", "docs"), ("infra", "infra/ci"), ("ci", "infra/ci"), ("migration", "db-schema"),
@@ -228,7 +232,7 @@ def analyze(root: Path, staged_only: bool = False) -> dict:
         warnings.append(f"secret-looking file(s) detected and excluded from every proposal: {', '.join(secrets)}; do not commit them (add to .gitignore if appropriate)")
     if generated:
         warnings.append(f"{len(generated)} generated/vendored file(s) changed and excluded from proposals; confirm they should be ignored")
-    return {
+    out = {
         "repo": str(root), "mode": "staged" if staged_only else "working-tree", "state": st,
         "summary": {"files": len(entries), "clusters": len([p for p in props]), "added": sum(e["added"] for e in entries),
                     "deleted": sum(e["deleted"] for e in entries), "staged": len(sc_staged),
@@ -238,3 +242,59 @@ def analyze(root: Path, staged_only: bool = False) -> dict:
         "flags": {"secrets": secrets, "generated": generated, "conflicted": conflicted, "binary": sorted(p for p, m in meta.items() if m["binary"])},
         "notes": notes, "warnings": warnings,
     }
+    return _bound(out)
+
+
+def _cap_list(items: list, limit: int) -> tuple:
+    return (items[:limit], len(items) - limit) if len(items) > limit else (items, 0)
+
+
+def _bound(out: dict) -> dict:
+    """Cap every unbounded list.  Output of repositories under the caps is returned unchanged (byte-for-byte);
+    above them ``truncated: true``, per-list ``*_total`` / ``*_omitted`` counts and a warning say what was cut."""
+    omitted: dict = {}
+
+    def note(key: str, n: int) -> None:
+        if n:
+            omitted[key] = omitted.get(key, 0) + n
+
+    if len(out["files"]) > MAX_LISTED_FILES:
+        # tracked changes first (they matter most), then untracked, each in path order
+        ordered = sorted(out["files"], key=lambda f: (f["status"] == "?", f["path"]))
+        out["files_total"] = len(out["files"])
+        out["files"], n = _cap_list(ordered, MAX_LISTED_FILES)
+        note("files", n)
+    for c in out["clusters"]:
+        if len(c["paths"]) > MAX_PATHS_PER_LIST:
+            c["paths_total"] = len(c["paths"])
+            c["paths"], n = _cap_list(c["paths"], MAX_PATHS_PER_LIST)
+            c["paths_omitted"] = n
+            note("cluster_paths", n)
+    for pr in out["proposals"]:
+        if len(pr["files"]) > MAX_PATHS_PER_LIST:
+            pr["files_total"] = len(pr["files"])
+            pr["files"], n = _cap_list(pr["files"], MAX_PATHS_PER_LIST)
+            pr["files_omitted"] = n
+            note("proposal_files", n)
+    for cmds in [pr["commands"] for pr in out["proposals"]] + [c["commands"] for c in out["commands"]]:
+        for i, cmd in enumerate(cmds):
+            if len(cmd) > 16_000 or cmd.count(" ") > MAX_PATHS_PER_LIST * 2:
+                verb = cmd.split(" -- ")[0]
+                cmds[i] = (f"# {verb}: too many paths to list here; run it per directory/pathspec (see `files_total`/`paths_total` of the cluster)")
+                note("commands_truncated", 1)
+    if len(out["mixed_concerns"]) > MAX_MIXED:
+        out["mixed_concerns"], n = _cap_list(out["mixed_concerns"], MAX_MIXED)
+        note("mixed_concerns", n)
+    for k, v in list(out["flags"].items()):
+        if len(v) > MAX_PATHS_PER_LIST:
+            out["flags"][k + "_total"] = len(v)
+            out["flags"][k], n = _cap_list(v, MAX_PATHS_PER_LIST)
+            note("flags_" + k, n)
+    if omitted:
+        out["truncated"] = True
+        out["omitted"] = omitted
+        out["warnings"].append("output truncated for size: " + ", ".join(f"{k}={v}" for k, v in sorted(omitted.items()))
+                               + " entries omitted; summary counts are complete, listed paths are not")
+        out["notes"].append("Because the change set is large, file lists and some staging commands are abbreviated; "
+                            "work cluster by cluster (use `--staged` after staging) rather than copying a truncated command.")
+    return out
