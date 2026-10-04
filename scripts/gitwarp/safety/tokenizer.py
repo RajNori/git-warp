@@ -44,7 +44,7 @@ class Cmd:
     words: List[Word] = field(default_factory=list)
     heredocs: List[str] = field(default_factory=list)
     herestrings: List[str] = field(default_factory=list)
-    redirs: List[str] = field(default_factory=list)       # output redirection targets (``> f``, ``>> f``, ``&> f``)
+    redirs: List[str] = field(default_factory=list)       # FILE-writing redirection targets (``> f``, ``>> f``, ``&> f``, ``<> f``, ``>&word``); never fd duplication/closure
     in_redirs: List[str] = field(default_factory=list)    # input redirection sources (``< f``)
     pipe_prev: Optional["Cmd"] = None
 
@@ -434,7 +434,9 @@ class Parser:
                     mode, i, heredoc_strip = "heredoc", i + 3, True
                 elif s.startswith("<<", i):
                     mode, i, heredoc_strip = "heredoc", i + 2, False
-                elif s.startswith(">>", i) or s.startswith(">|", i) or s.startswith(">&", i):
+                elif s.startswith(">&", i):
+                    mode, i = "dup", i + 2          # `>&M` / `>&-` duplicate or close a descriptor; `>&word` writes a FILE
+                elif s.startswith(">>", i) or s.startswith(">|", i):
                     mode, i = "out", i + 2
                 elif s.startswith("<>", i):
                     mode, i = "out", i + 2          # `<>` opens read-write and creates the file
@@ -455,6 +457,10 @@ class Parser:
                 mode = None
             elif mode == "out":
                 cur.redirs.append(w.text)
+                mode = None
+            elif mode == "dup":
+                if w.dyn or not (w.text.isdigit() or w.text == "-"):
+                    cur.redirs.append(w.text)      # `>&file` is a file write; only `>&N` / `>&-` are descriptor operations
                 mode = None
             elif mode == "in":
                 cur.in_redirs.append(w.text)
