@@ -91,14 +91,21 @@ def test_nul_bytes_do_not_hide_commands():
 
 @pytest.mark.parametrize("cmd", [
     "gіt reset --hard",           # cyrillic i: not git
-    "git rеset --hard",                 # cyrillic e: not a git subcommand
     "git reset －－hard",       # fullwidth hyphens
     "git reset --hard",            # nbsp is part of the word in a shell
-    "git re​set --hard",           # zero width space inside word
     "\U0001f600 git status", "git commit -m '\U0001f600‮ reset --hard'",
 ])
 def test_unicode_lookalikes_do_not_crash_and_do_not_false_positive(cmd):
     assert run(cmd).decision == "defer"
+
+
+@pytest.mark.parametrize("cmd", [
+    "git rеset --hard",                 # cyrillic e: not a git subcommand
+    "git re​set --hard",           # zero width space inside word
+])
+def test_unicode_lookalike_subcommands_ask_as_possible_aliases(cmd):
+    """Changed from defer: an unrecognised subcommand may be a configured alias, so it is ASK (never deny: it is not real reset)."""
+    assert run(cmd).decision == "ask"
 
 
 def test_unicode_bidi_does_not_hide_real_command():

@@ -253,6 +253,18 @@ RULES = {
     "stdin-script": ("ask", "shell reading a computed script",
                      "A shell is given a script through a process substitution, /dev/stdin or similar and the command mentions git.",
                      "Git Warp cannot see the script text that will actually run.", ["Run the Git command directly so it can be reviewed"]),
+    "unknown-subcommand": ("ask", "git <unrecognised subcommand>",
+                           "`git {tool}` is not a known Git subcommand, so it may be a configured alias (for example `alias.x = reset --hard`).",
+                           "Git aliases cannot shadow builtins, but the guard does not read git config and cannot see what an alias expands to.",
+                           ["Spell out the real Git command", "git config --get-regexp '^alias\\.'  # inspect the aliases first"]),
+    "fetch-force-protected": ("deny", "git fetch/pull --force into a protected local branch",
+                              "A forced fetch/pull refspec overwrites the local branch '{branch}' (protected) with remote history.",
+                              "Local commits on that branch are discarded without a way back except the reflog.",
+                              ["git fetch origin  # update remote-tracking refs only", "git merge --ff-only origin/<branch>"]),
+    "fetch-force-local": ("ask", "git fetch/pull --force into a local branch",
+                          "A forced fetch/pull refspec overwrites or rewinds the local branch '{branch}'.",
+                          "Local commits on that branch can be lost.",
+                          ["git fetch origin  # update remote-tracking refs only", "git branch rescue/pre-fetch  # keep the old tip"]),
     "env-alias": ("ask", "GIT_CONFIG alias via environment",
                   "An alias is injected through GIT_CONFIG_* environment variables.",
                   "Aliases can run arbitrary commands the guard cannot classify.", ["Run the real command spelled out"]),
@@ -261,7 +273,26 @@ RULES = {
 # ask-level rules that turn into deny in strict mode (history rewriting)
 HISTORY_RULES = frozenset({"rebase", "commit-amend", "branch-force-delete", "branch-force-move",
                            "push-force", "push-delete", "reset-protected", "update-ref-protected",
-                           "push-prune"})
+                           "push-prune", "fetch-force-local"})
+
+# Static list of Git builtins / plumbing / porcelain (from `git --list-cmds=main,others,nohelpers`, Git 2.53) plus common
+# externals.  Git aliases cannot shadow builtins, so a subcommand NOT in this set may be a user/repo-config alias
+# (`alias.x = reset --hard`) that the guard cannot see -> ask.  Static on purpose: the guard never shells out to git config.
+GIT_BUILTINS = frozenset("""add am annotate apply archimport archive backfill bisect blame branch bugreport bundle cat-file check-attr
+check-ignore check-mailmap check-ref-format checkout checkout-index cherry cherry-pick clean clone column commit commit-graph commit-tree
+config count-objects credential credential-cache credential-gcloud credential-netrc credential-osxkeychain credential-store
+cvsexportcommit cvsimport cvsserver daemon describe diagnose diff diff-files diff-index diff-pairs diff-tree difftool write-tree
+fast-export fast-import fetch fetch-pack filter-branch fmt-merge-msg for-each-ref for-each-repo format-patch fsck fsck-objects worktree
+gc get-tar-commit-id grep hash-object help hook http-backend http-fetch http-push imap-send index-pack init init-db instaweb
+interpret-trailers jump last-modified log ls-files ls-remote ls-tree mailinfo mailsplit maintenance merge merge-base merge-file
+merge-index merge-octopus merge-one-file merge-ours merge-recursive merge-recursive-ours merge-recursive-theirs merge-resolve
+merge-subtree merge-tree mergetool mktag mktree multi-pack-index mv name-rev notes p4 pack-objects pack-redundant pack-refs patch-id
+pickaxe prune prune-packed pull push quiltimport range-diff read-tree rebase receive-pack reflog refs remote remote-ext remote-fd
+remote-ftp remote-ftps remote-http remote-https repack replace replay repo request-pull rerere reset restore rev-list rev-parse revert
+rm send-email send-pack whatchanged shell shortlog show show-branch show-index show-ref sparse-checkout stage stash status stripspace
+submodule version subtree switch symbolic-ref tag unpack-file unpack-objects update-index update-ref update-server-info
+upload-archive verify-tag upload-pack var verify-commit verify-pack
+lfs gui gitk citool scalar svn flow annex filter-repo""".split())
 
 GIT_SUBS = frozenset("""add am apply archive bisect blame branch bundle checkout cherry cherry-pick clean clone commit config describe diff
 fetch filter-branch filter-repo format-patch fsck gc grep init log ls-files ls-remote merge mv notes prune pull push range-diff rebase reflog
@@ -615,6 +646,9 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
         return
     rest, flagged = _subst_known(rest, ctx)
     name = sub.text
+    if sub_override is None and name not in GIT_BUILTINS:
+        ctx.add("unknown-subcommand", tool=name[:60])
+        return
     cands = [None] if dir_override else list(ctx.cands)
     fn = _HANDLERS.get(name)
     if name in ("filter-branch", "filter-repo"):
@@ -640,7 +674,8 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
 
 
 _DESTRUCTIVE_SUBS = frozenset({"reset", "clean", "push", "checkout", "restore", "branch", "gc", "reflog", "stash", "update-ref",
-                               "tag", "worktree", "switch", "prune", "rm", "read-tree", "checkout-index", "submodule", "rebase"})
+                               "tag", "worktree", "switch", "prune", "rm", "read-tree", "checkout-index", "submodule", "rebase",
+                               "fetch", "pull"})
 _EXPIRE_NOW = re.compile(r"^gc\.(prune|reflog)expire(unreachable)?\s*=\s*(now|all|0|0\.\w+)$", re.I)
 
 
@@ -864,6 +899,53 @@ def _h_push(rest, ctx, cands):
         ctx.add("push-force", branch=_cand_label(force_dsts) if not unknown else "an unknown branch")
 
 
+def _fetch_refspecs(o: Opts, skip_repo: bool = True) -> List[str]:
+    pos = o.all_pos
+    return pos[1:] if skip_repo else pos
+
+
+def _h_fetch(rest, ctx, cands, pull: bool = False):
+    """Forced refspecs (`+src:dst`, --force/-f, --update-head-ok) whose destination is a LOCAL branch overwrite or rewind it.
+    Plain `git fetch [remote [branch]]` only updates remote-tracking refs and is not Guardian's business."""
+    o = Opts(rest, ctx=ctx, short_arg={"j", "o", "S"} if not pull else {"s", "X", "j", "S"},
+             long_arg={"depth", "jobs", "filter", "upload-pack", "server-option", "shallow-since", "shallow-exclude", "deepen",
+                       "negotiation-tip", "refmap", "recurse-submodules", "strategy", "strategy-option", "negotiate-only",
+                       "submodule-prefix", "gpg-sign", "cleanup", "log"})
+    flag_force = "f" in o.shorts or o.lopt("force", 3) or o.lopt("update-head-ok", 3) or (not pull and "u" in o.shorts)
+    refspecs = _fetch_refspecs(o)
+    if pull and flag_force and not any(":" in r for r in refspecs):
+        ctx.add("fetch-force-local", branch="the current branch")   # `pull --force` may rewind the checked-out branch
+        return
+    for r in refspecs:
+        plus = r.startswith("+")
+        spec = r.lstrip("+")
+        src, colon, dst = spec.partition(":")
+        if not colon or not dst:
+            continue
+        if not (plus or flag_force):
+            continue
+        d = dst[len("refs/heads/"):] if dst.startswith("refs/heads/") else dst
+        if dst.startswith(("refs/remotes/", "refs/tags/", "refs/notes/")) or (dst.startswith("refs/") and not dst.startswith("refs/heads/")):
+            continue                                     # remote-tracking / tags / notes: not a local branch
+        if "$" in dst or "`" in dst:
+            ctx.add("fetch-force-local", branch="an unknown branch")
+            continue
+        if "*" in d or "?" in d or "[" in d:
+            if any(fnmatch.fnmatchcase(p, d) for p in ctx.cfg.protected_branches) or d in ("*",):
+                ctx.add("fetch-force-protected", branch=d)
+            else:
+                ctx.add("fetch-force-local", branch=d)
+            continue
+        if ctx.protected(d):
+            ctx.add("fetch-force-protected", branch=d)
+        else:
+            ctx.add("fetch-force-local", branch=d)
+
+
+def _h_pull(rest, ctx, cands):
+    _h_fetch(rest, ctx, cands, pull=True)
+
+
 def _h_branch(rest, ctx, cands):
     o = Opts(rest, ctx=ctx, short_arg={"u"}, long_arg={"set-upstream-to", "sort", "format", "contains", "no-contains",
                                                "merged", "no-merged", "points-at", "color", "column"})
@@ -990,7 +1072,7 @@ _HANDLERS = {
     "reflog": _h_reflog, "gc": _h_gc, "prune": _h_prune, "stash": _h_stash, "update-ref": _h_update_ref,
     "push": _h_push, "branch": _h_branch, "commit": _h_commit, "rebase": _h_rebase, "tag": _h_tag,
     "worktree": _h_worktree, "submodule": _h_submodule, "config": _h_config, "remote": _h_remote,
-    "bisect": _h_bisect, "checkout-index": _h_checkout_index, "read-tree": _h_read_tree, "rm": _h_git_rm,
+    "fetch": _h_fetch, "pull": _h_pull, "bisect": _h_bisect, "checkout-index": _h_checkout_index, "read-tree": _h_read_tree, "rm": _h_git_rm,
 }
 
 
