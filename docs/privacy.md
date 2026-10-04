@@ -33,6 +33,13 @@ Storage is hardened by one layer (`scripts/gitwarp/core/storage.py`) used by eve
   `O_APPEND` descriptor under `flock`; if a crash left a partial last line, the next record starts on a fresh line.
 - The location is resolved with Git (the common Git directory), so a linked worktree, whose `.git` is a file, shares
   one state directory with its main repository.
+- Every write to Git Warp's private state under `.git/git-warp` (flight-recorder append, rotation and compaction, `state.json`
+  updates, and creation of the memory index) is serialised by an advisory lock. If the lock cannot be obtained within 5 seconds,
+  because another process is holding it, the operation is **refused rather than performed without the lock**. A flight-recorder
+  record is then dropped explicitly: it is never appended into a file that a concurrent compaction is about to replace. A
+  `state.json` update is skipped, a compaction is deferred to its next run, and the memory index falls back to an in-memory index
+  for that run with a warning. Refusals are silent in hooks (exit 0), and they never modify or delete data that is already stored.
+  The lock is advisory (`flock`), so a process that does not use Git Warp's storage layer is not excluded.
 - Windows has no POSIX permission bits or `flock`: the modes are best effort there (see [platforms.md](platforms.md)).
   Residual risks: SQLite opens `warp.db` by path, so a same-account process that wins a race between the checks and
   the open is not fully excluded (the 0700 directory limits this to the same user); the check before the final
