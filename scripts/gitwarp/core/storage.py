@@ -305,10 +305,14 @@ def _unlink_quiet(d: _Dir, name: str) -> None:
         pass
 
 
-def _lock(fd: int, timeout: float = 2.0) -> bool:
+class LockTimeout(OSError):
+    """The advisory lock could not be taken in time: the operation is refused (never performed unlocked)."""
+
+
+def _lock(fd: int, timeout: Optional[float] = None) -> bool:
     if fcntl is None:
         return True
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + (LOCK_WAIT if timeout is None else timeout)
     while True:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -319,7 +323,12 @@ def _lock(fd: int, timeout: float = 2.0) -> bool:
             time.sleep(0.005)
 
 
-LOCK_WAIT = 10.0
+# Drop semantics: every mutator of a state file (recorder append/rotation/compaction, state.json update, index creation)
+# must HOLD its lock.  If the lock cannot be taken within LOCK_WAIT seconds the operation is refused with LockTimeout
+# and NOT performed: a flight-recorder record is dropped explicitly (never appended into a file that a concurrent
+# compaction is about to replace), a state.json update is skipped, a compaction is skipped until its next run.
+# Nothing already stored is lost or modified by a refused operation.
+LOCK_WAIT = 5.0
 
 
 class _Locked:
@@ -331,12 +340,11 @@ class _Locked:
     a compaction snapshot and its replacement, and nobody holds a lock on a replaced inode.
     """
 
-    def __init__(self, d: _Dir, name: str, require: bool = False):
+    def __init__(self, d: _Dir, name: str):
         self.lfd = _open_file(d, name + ".lock", os.O_RDWR, create=True)
-        self.locked = _lock(self.lfd, LOCK_WAIT)
-        if require and not self.locked:
+        if not _lock(self.lfd):
             os.close(self.lfd)
-            raise OSError(f"could not lock {name} (busy)")       # compaction refuses rather than risk losing an append
+            raise LockTimeout(f"could not lock {name} within {LOCK_WAIT}s; operation refused")
         try:
             self.fd = _open_file(d, name, os.O_RDWR | os.O_APPEND, create=True)
         except BaseException:
@@ -384,7 +392,7 @@ def rewrite_locked(directory, name: str, transform: Callable[[bytes], Optional[b
     The lock is held until after the replace, so concurrent appends wait and then land in the new file.
     """
     with _Dir(directory, create=True) as d:
-        h = _Locked(d, name, require=True)
+        h = _Locked(d, name)
         try:
             chunks = []
             rfd = _open_file(d, name, os.O_RDONLY)
@@ -408,18 +416,16 @@ def update_locked(directory, name: str, fn: Callable[[Optional[bytes]], bytes]) 
     with _Dir(directory, create=True) as d:
         lfd = _open_file(d, name + ".lock", os.O_WRONLY, create=True)
         try:
-            _lock(lfd, LOCK_WAIT)                        # bounded wait; the atomic replace still protects integrity
-            try:
-                cur = read_bytes(directory, name)
-            except UnsafeStorage:
-                raise
+            if not _lock(lfd):
+                raise LockTimeout(f"could not lock {name} within {LOCK_WAIT}s; update refused")
+            cur = read_bytes(directory, name)
             write_atomic(directory, name, fn(cur))
         finally:
             os.close(lfd)
 
 
 class file_lock:
-    """Exclusive advisory lock on ``<name>.lock`` in the state directory (bounded wait; proceeds unlocked on timeout)."""
+    """Exclusive advisory lock on ``<name>.lock`` in the state directory (bounded wait; raises LockTimeout, never proceeds unlocked)."""
 
     def __init__(self, directory, name: str, timeout: float = 30.0):
         self.directory, self.name, self.timeout, self.fd = directory, name + ".lock", timeout, None
@@ -428,7 +434,9 @@ class file_lock:
         with _Dir(self.directory, create=True) as d:
             self.fd = _open_file(d, self.name, os.O_WRONLY, create=True)
         if not _lock(self.fd, self.timeout):
-            pass                                         # callers must still tolerate concurrency; the lock only narrows it
+            os.close(self.fd)
+            self.fd = None
+            raise LockTimeout(f"could not lock {self.name} within {self.timeout}s")
         return self
 
     def __exit__(self, *exc):

@@ -114,8 +114,11 @@ def open_db(cwd) -> WarpConnection:
     except OSError as e:
         return _memory_db(str(cwd), [f"state storage refused or not writable ({e}); index kept in memory for this run only"])
     key = str(path)
-    with storage.file_lock(path.parent, DB_NAME):    # serialises first creation / schema init / quarantine across processes
-        return _open_locked(cwd, path, key, warnings)
+    try:
+        with storage.file_lock(path.parent, DB_NAME):    # serialises first creation / schema init / quarantine across processes
+            return _open_locked(cwd, path, key, warnings)
+    except storage.LockTimeout as e:
+        return _memory_db(key, warnings + [f"warp.db is busy ({e}); index kept in memory for this run only"])
 
 
 def _is_corruption(e: Exception) -> bool:
