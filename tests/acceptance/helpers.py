@@ -170,8 +170,58 @@ def _run(argv, *, cwd, env=None, input=None, timeout=60) -> Run:
         return Run(list(map(str, argv)), None, s(e.stdout), s(e.stderr), time.monotonic() - t, timed_out=True)
 
 
-def run_warp(repo, *args, env=None, timeout=90, with_repo=True) -> Run:
+def run_pty(argv, *, cwd, env=None, input=None, timeout=60) -> Run:
+    """Run with stdout/stderr attached to a pseudo-terminal (so Git would start a pager if configured to)."""
+    import pty
+    import select
+    t = time.monotonic()
+    master, slave = pty.openpty()
+    e = clean_env(env)
+    if e.get("TERM", "dumb") == "dumb":
+        e["TERM"] = "xterm"
+    p = subprocess.Popen([str(a) for a in argv], cwd=str(cwd), env=e, stdin=subprocess.PIPE, stdout=slave, stderr=slave,
+                         close_fds=True)
+    os.close(slave)
+    try:
+        try:
+            if input is not None:
+                p.stdin.write(input.encode())
+            p.stdin.close()
+        except OSError:
+            pass
+        chunks, timed_out = [], False
+        while True:
+            left = timeout - (time.monotonic() - t)
+            if left <= 0:
+                timed_out = True
+                break
+            r, _, _ = select.select([master], [], [], min(left, 0.5))
+            if r:
+                try:
+                    data = os.read(master, 65536)
+                except OSError:
+                    break
+                if not data:
+                    break
+                chunks.append(data)
+            elif p.poll() is not None:
+                break
+        if timed_out:
+            p.kill()
+        code = p.wait(timeout=10)
+        return Run(list(map(str, argv)), None if timed_out else code, b"".join(chunks).decode("utf-8", "replace"), "",
+                   time.monotonic() - t, timed_out=timed_out)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+        os.close(master)
+
+
+def run_warp(repo, *args, env=None, timeout=90, with_repo=True, pty=False) -> Run:
     argv = [sys.executable, str(WARP), *args] + (["--repo", str(repo)] if with_repo else [])
+    if pty:
+        return run_pty(argv, cwd=repo, env=env, timeout=timeout)
     return _run(argv, cwd=repo, env=clean_env(env), timeout=timeout)
 
 
@@ -197,8 +247,10 @@ def hook_event(name: str, cwd, command: str = "git status", tool: str = "Bash", 
     return ev
 
 
-def run_hook(name: str, cwd, event=None, raw=None, env=None, timeout=60) -> Run:
+def run_hook(name: str, cwd, event=None, raw=None, env=None, timeout=60, pty=False) -> Run:
     payload = raw if raw is not None else json.dumps(event if event is not None else hook_event(name, cwd))
+    if pty:
+        return run_pty([sys.executable, str(SCRIPTS / f"hook_{name}.py")], cwd=cwd, env=env, input=payload, timeout=timeout)
     return _run([sys.executable, str(SCRIPTS / f"hook_{name}.py")], cwd=cwd, env=clean_env(env), input=payload, timeout=timeout)
 
 
@@ -311,11 +363,13 @@ class Fixture:
         self.g("commit", "-q", "-m", msg, env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp})
         return self.g("rev-parse", "HEAD").stdout.strip()
 
-    def marker_script(self, name: str, passthrough: bool = False) -> Path:
-        """Executable that appends one line to markers/<name>.log (outside the repo) and does nothing else."""
+    def marker_script(self, name: str, passthrough: bool = False, stdin_passthrough: bool = False) -> Path:
+        """Executable that appends one line to markers/<name>.log (outside the repo) and does nothing else
+        (``passthrough`` echoes its first argument file, ``stdin_passthrough`` copies stdin: pagers / filters)."""
         self.markers.mkdir(parents=True, exist_ok=True)
         log = self.markers / f"{name}.log"
-        body = f'#!/bin/sh\nprintf \'%s\\n\' "{name} $*" >> "{log}"\n' + ('cat "$1" 2>/dev/null\n' if passthrough else "") + "exit 0\n"
+        body = (f'#!/bin/sh\nprintf \'%s\\n\' "{name} $*" >> "{log}"\n'
+                + ('cat "$1" 2>/dev/null\n' if passthrough else "") + ("cat\n" if stdin_passthrough else "") + "exit 0\n")
         s = self.markers / f"{name}.sh"
         s.write_text(body)
         s.chmod(0o755)
