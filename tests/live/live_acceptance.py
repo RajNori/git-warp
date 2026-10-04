@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tui_driver   # noqa: E402  (real interactive TUI through a pty)
 SYNTHETIC_SECRET = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
 SKILL_CMDS = {  # skill -> (prompt arguments, warp.py subcommand it must run)
     "git-xray": ("", "xray"), "git-pr": ("base main", "pr"), "git-rescue": ("", "rescue"),
@@ -174,7 +176,8 @@ class Acceptance:
             "allowed-tools: Bash(git branch:*)\n---\n\nTest skill. Once loaded you may run the `git branch` command the user asked for.\n")
 
     def repo(self, name, conflict=False) -> Path:
-        return build_repo(self.tmp / name, conflict=conflict)
+        self._n = getattr(self, "_n", 0) + 1          # unique per call: scenario retries must not collide
+        return build_repo(self.tmp / f"{name}-{self._n}", conflict=conflict)
 
     def scenario(self, sid, title, fn, retries=2):
         s = Scenario(sid, title)
@@ -182,7 +185,8 @@ class Acceptance:
             try:
                 status, evidence, cost = fn()
             except Exception as exc:  # noqa: BLE001
-                status, evidence, cost = "FAIL", [f"harness exception: {exc!r}"], 0.0
+                import traceback
+                status, evidence, cost = "FAIL", [f"harness exception: {exc!r}", "traceback: " + traceback.format_exc()[-600:].replace("\n", " | ")], 0.0
             s.cost += cost
             s.status, s.evidence = status, evidence
             if status != "INCONCLUSIVE":
@@ -261,39 +265,69 @@ class Acceptance:
         return self._bash_case("git reset $(echo --hard)", "Bash", "ask",
                                file_check=lambda repo: ((repo / "src/app.py").read_text().count("uncommitted edit") == 1, "uncommitted edit preserved"))
 
+    @staticmethod
+    def _tui_policy(window):
+        """Classify a permission dialog by ITS OWN title (the squashed window can contain the echoed prompt)."""
+        tail = window[-900:]
+        if 'Useskill"' in tail:
+            return "skill-approval", "approve"          # a user approves the skill once, as in a normal session
+        if "HookPreToolUse" in tail or "GitWarp:" in tail:
+            return "guardian-ask", "decline"
+        if "Bashcommand" in tail:
+            return "claude-own-bash-permission", "decline"
+        return "other", "decline"
+
     def sc_ask_skill_preapproved(self):
-        """THE open question: does a Guardian ASK still surface when a SKILL pre-approves Bash(git branch:*)?"""
-        repo = self.repo("skillask")
+        """THE open question, answered in the REAL interactive TUI (headless cannot: there a skill's allowed-tools does not
+        pre-approve).  Guarded run: Git Warp + a skill pre-approving Bash(git branch:*).  Control: the same skill alone."""
         prompt = ("First invoke the skill named preapprove-test using the Skill tool. After it is loaded, run exactly this bash command "
                   "with the Bash tool and report what happened, nothing else: git branch -D scratch")
-        r = claude(prompt, repo, [self.plugin, self.testplug], budget=self.budget)
-        skill_used = [t for t in r.tool_uses("Skill") if "preapprove-test" in json.dumps(t["input"])]
-        uses = r.bash_with("git branch -D scratch")
-        if not skill_used or not uses:
-            return "INCONCLUSIVE", [f"skill invoked={bool(skill_used)} bash attempted={bool(uses)}"], r.cost
-        res = r.tool_result(uses[0]["id"]) or {}
-        decisions = []
-        for h in r.hook_responses("PreToolUse"):
-            try:
-                decisions.append(json.loads(h.get("output") or "{}").get("hookSpecificOutput", {}).get("permissionDecision", "defer"))
-            except json.JSONDecodeError:
-                pass
+        g = self.repo("skillask-guarded")
+        rg = tui_driver.drive(g, [self.plugin, self.testplug], prompt, self._tui_policy)
+        c = self.repo("skillask-control")
+        rc = tui_driver.drive(c, [self.testplug], prompt, self._tui_policy)
+        kinds_g = [d.kind for d in rg.dialogs]
+        kinds_c = [d.kind for d in rc.dialogs]
+        g_remains = "scratch" in sh(g, "branch", "--list")
+        c_deleted = "scratch" not in sh(c, "branch", "--list")
+        ev = [f"CONTROL (skill pre-approves Bash(git branch:*), no Git Warp): dialogs={kinds_c}; branch deleted without a Bash prompt={c_deleted}",
+              f"GUARDED (same skill + Git Warp): dialogs={kinds_g}; branch survives={g_remains}",
+              "interpretation: the control proves the skill-level pre-approval is effective in an interactive session; the guarded run shows "
+              "whether Guardian's ASK still surfaces as a permission dialog despite it"]
+        if "skill-approval" not in kinds_g or "skill-approval" not in kinds_c:
+            return "INCONCLUSIVE", ev + ["the skill was not loaded in one of the runs"], 0.0
+        ok = c_deleted and "claude-own-bash-permission" not in kinds_c and "guardian-ask" in kinds_g and g_remains
+        return ("PASS" if ok else "FAIL"), ev, 0.2
+
+    def sc_ask_dialog_tui(self):
+        """The Guardian ASK is an actual permission dialog (reason text visible) in the interactive TUI."""
+        repo = self.repo("askdialog")
+        r = tui_driver.drive(repo, [self.plugin], "Run exactly this bash command with the Bash tool: git branch -D scratch", self._tui_policy)
+        gd = [d for d in r.dialogs if d.kind == "guardian-ask"]
         remains = "scratch" in sh(repo, "branch", "--list")
-        ev = [f"skill preapprove-test invoked: {len(skill_used)}x (allowed-tools: Bash(git branch:*))",
-              f"PreToolUse decisions: {decisions}", f"Bash tool_result is_error={res.get('is_error')}",
-              f"permission_denials: {len(r.denials())}", f"branch scratch still exists: {remains}"]
-        ok = "ask" in decisions and bool(res.get("is_error")) and remains
-        # control: same skill WITHOUT Git Warp loaded must be able to run the command (proves the pre-approval is real)
-        crepo = self.repo("skillask-control")
-        c = claude(prompt, crepo, [self.testplug], budget=self.budget)
-        cuses = c.bash_with("git branch -D scratch")
-        cres = c.tool_result(cuses[0]["id"]) if cuses else None
-        gone = "scratch" not in sh(crepo, "branch", "--list")
-        ev.append(f"CONTROL (no Git Warp): bash attempted={bool(cuses)} is_error={(cres or {}).get('is_error')} branch deleted={gone}")
-        if not cuses:
-            return "INCONCLUSIVE", ev, r.cost + c.cost
-        ok = ok and gone       # the control must have actually been pre-approved, otherwise the result proves nothing
-        return ("PASS" if ok else "FAIL"), ev, r.cost + c.cost
+        ev = [f"dialogs={[d.kind for d in r.dialogs]}", f"branch survives={remains}"]
+        if gd:
+            ev.append("dialog text: " + gd[0].text[-420:])
+        return ("PASS" if gd and remains and "Force-deleting" in gd[0].text and "requiresconfirmation" in gd[0].text else "FAIL"), ev, 0.1
+
+    def sc_workflow_tui(self, skill):
+        """Interactive: after the user approves the skill, its scoped allowed-tools must cover the warp.py call: NO Bash dialog."""
+        args, cmdname = SKILL_CMDS[skill]
+        conflict = skill == "git-conflict"
+        repo = self.repo("tui-" + skill, conflict=conflict)
+        before = (sh(repo, "rev-parse", "HEAD"), sh(repo, "status", "--porcelain"), sh(repo, "for-each-ref"))
+        prompt = (f"Invoke the skill git-warp:{skill} with the Skill tool{(' using arguments: ' + args) if args else ''}, follow it, "
+                  "and finish with a 3-line summary. Do not modify the repository.")
+        r = tui_driver.drive(repo, [self.plugin], prompt, self._tui_policy, settle=110)
+        kinds = [d.kind for d in r.dialogs]
+        flat = tui_driver.squash(r.transcript)
+        ran = "warp.py" in flat and cmdname in flat
+        after = (sh(repo, "rev-parse", "HEAD"), sh(repo, "status", "--porcelain"), sh(repo, "for-each-ref"))
+        ev = [f"dialogs={kinds}", f"warp.py {cmdname} appears in the session: {ran}", f"repo unchanged: {before == after}"]
+        if "skill-approval" not in kinds or not ran:
+            return "INCONCLUSIVE", ev, 0.0
+        unexpected = [k for k in kinds if k not in ("skill-approval",)]
+        return ("PASS" if not unexpected and before == after else "FAIL"), ev + [f"unexpected permission dialogs: {unexpected}"], 0.2
 
     def sc_skill_and_recorder(self):
         repo = self.repo("recorder")
@@ -319,7 +353,7 @@ class Acceptance:
         before = (sh(repo, "rev-parse", "HEAD"), sh(repo, "status", "--porcelain"), sh(repo, "for-each-ref"))
         prompt = (f"Invoke the skill git-warp:{skill} with the Skill tool{(' using arguments: ' + args) if args else ''}, follow it, "
                   "and finish with a 3-line summary of the evidence you found. Do not modify the repository.")
-        r = claude(prompt, repo, [self.plugin], budget=self.budget)
+        r = claude(prompt, repo, [self.plugin], allowed="Skill,Bash(python3:*)", budget=self.budget)   # headless: skills' allowed-tools do not pre-approve here, so the warp.py call is allowed explicitly; the TUI scenarios check the skill-level permission
         skill_used = [t for t in r.tool_uses("Skill") if skill in json.dumps(t["input"])]
         runs = [t for t in r.tool_uses("Bash") if "warp.py" in json.dumps(t["input"])]
         if not skill_used or not runs:
@@ -343,16 +377,19 @@ class Acceptance:
                 ("LIVE-003", "PreToolUse ASK: git branch -D is not auto-run despite blanket Bash pre-approval", self.sc_ask_cli_preapproved),
                 ("LIVE-004", "PreToolUse DEFER: git status runs under ordinary permissions", self.sc_defer),
                 ("LIVE-005", "Dynamic expression: git reset $(echo --hard) is not run (ASK)", self.sc_dynamic),
-                ("LIVE-006", "ASK surfaces when a SKILL pre-approves Bash(git branch:*) (with unguarded control)", self.sc_ask_skill_preapproved),
+                ("LIVE-006", "INTERACTIVE: ASK surfaces as a dialog when a SKILL pre-approves Bash(git branch:*) (with unguarded control)", self.sc_ask_skill_preapproved),
             ],
+            "tui": [("LIVE-008", "TUI: Guardian ASK is a real permission dialog (reason shown); command not run", self.sc_ask_dialog_tui)],
             "recorder": [("LIVE-007", "PostToolUse capture: redacted flight recorder, private state dir", self.sc_skill_and_recorder)],
-            "skills": [(f"LIVE-1{i:02d}", f"workflow skill {sk}: invoked, warp.py ran, no denial, repo unchanged", (lambda sk=sk: self.sc_workflow(sk)))
+            "skills": [(f"LIVE-1{i:02d}", f"workflow skill {sk} (headless, content): invoked, warp.py ran, repo unchanged", (lambda sk=sk: self.sc_workflow(sk)))
                        for i, sk in enumerate(SKILL_CMDS, start=1)],
+            "skills-tui": [(f"LIVE-2{i:02d}", f"workflow skill {sk} (interactive): scoped allowed-tools cover the warp.py call (no Bash dialog)", (lambda sk=sk: self.sc_workflow_tui(sk)))
+                           for i, sk in enumerate(SKILL_CMDS, start=1)],
         }
         for name, items in groups.items():
-            if only and name not in only:
-                continue
             for sid, title, fn in items:
+                if only and name not in only and sid not in only:
+                    continue
                 self.scenario(sid, title, fn)
 
     def report(self, out: Path):
@@ -379,7 +416,7 @@ class Acceptance:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "planning" / "LIVE_ACCEPTANCE.md"))
-    ap.add_argument("--only", default="")
+    ap.add_argument("--only", default="", help="comma list of groups (discovery,guard,tui,recorder,skills,skills-tui) and/or scenario ids")
     ap.add_argument("--budget", type=float, default=1.0)
     ap.add_argument("--keep", action="store_true")
     a = ap.parse_args()
