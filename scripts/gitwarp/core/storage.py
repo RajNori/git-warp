@@ -319,61 +319,76 @@ def _lock(fd: int, timeout: float = 2.0) -> bool:
             time.sleep(0.005)
 
 
-def _open_locked_append(d: _Dir, name: str) -> int:
-    """O_APPEND fd holding an exclusive lock on the file currently at ``name`` (retries across rotation)."""
-    for _ in range(5):
-        fd = _open_file(d, name, os.O_RDWR | os.O_APPEND, create=True)
-        if fcntl is None:
-            return fd
-        try:
-            if _lock(fd):
-                st = _lstat(d.fd, name)
-                if st is not None and st.st_ino == os.fstat(fd).st_ino:
-                    return fd
-        except OSError:
-            pass
-        os.close(fd)
-    return _open_file(d, name, os.O_RDWR | os.O_APPEND, create=True)
+LOCK_WAIT = 10.0
 
 
-def append_line(directory, name: str, line: bytes, max_bytes: int, rotate_suffix: str = ".1") -> None:
-    """Append one whole line (single ``write`` on an O_APPEND fd).  Rotates to ``name + rotate_suffix`` past ``max_bytes``."""
-    if len(line) > MAX_LINE_BYTES:
-        raise ValueError("line too large")
-    with _Dir(directory, create=True) as d:
-        old = name + rotate_suffix
-        fd = _open_locked_append(d, name)
+class _Locked:
+    """Lock + data descriptors for an append-style file.
+
+    Locking design: ALL mutators of ``name`` (append, rotation, compaction/rewrite) serialise on a separate, stable
+    lock file ``<name>.lock`` (never replaced, so its inode never changes).  The lock is held across the whole
+    operation, including the ``os.replace`` that swaps the data file's inode, so an append can never land between
+    a compaction snapshot and its replacement, and nobody holds a lock on a replaced inode.
+    """
+
+    def __init__(self, d: _Dir, name: str, require: bool = False):
+        self.lfd = _open_file(d, name + ".lock", os.O_RDWR, create=True)
+        self.locked = _lock(self.lfd, LOCK_WAIT)
+        if require and not self.locked:
+            os.close(self.lfd)
+            raise OSError(f"could not lock {name} (busy)")       # compaction refuses rather than risk losing an append
         try:
-            if os.fstat(fd).st_size + len(line) > max_bytes:
-                _require_regular_or_absent(d, old)       # never rotate over an unexpected object
-                if _HAS_DIRFD:
-                    os.replace(name, old, src_dir_fd=d.fd, dst_dir_fd=d.fd)
-                else:  # pragma: no cover
-                    os.replace(str(d.path / name), str(d.path / old))
-                os.close(fd)
-                fd = _open_locked_append(d, name)
-            size = os.fstat(fd).st_size
-            if size and os.pread(fd, 1, size - 1) != b"\n":
-                line = b"\n" + line      # a crash left a torn last line: keep the fragment isolated, keep this record whole
-            n = os.write(fd, line)
-            if n != len(line):  # pragma: no cover - O_APPEND on a regular file writes whole
-                raise OSError("short write")
-        finally:
+            self.fd = _open_file(d, name, os.O_RDWR | os.O_APPEND, create=True)
+        except BaseException:
+            os.close(self.lfd)
+            raise
+        self.d, self.name = d, name
+
+    def reopen(self) -> None:
+        os.close(self.fd)
+        self.fd = _open_file(self.d, self.name, os.O_RDWR | os.O_APPEND, create=True)
+
+    def close(self) -> None:
+        for fd in (self.fd, self.lfd):
             try:
                 os.close(fd)
             except OSError:
                 pass
 
 
-def rewrite_locked(directory, name: str, transform: Callable[[bytes], Optional[bytes]]) -> None:
-    """Hold the append lock on ``name``, pass its contents to ``transform`` and atomically replace with the result (None = keep)."""
+def append_line(directory, name: str, line: bytes, max_bytes: int, rotate_suffix: str = ".1") -> None:
+    """Append one whole line (single ``write`` on an O_APPEND fd) under the stable lock.  Rotates to ``name + rotate_suffix`` past ``max_bytes``."""
+    if len(line) > MAX_LINE_BYTES:
+        raise ValueError("line too large")
     with _Dir(directory, create=True) as d:
-        fd = _open_locked_append(d, name)
+        old = name + rotate_suffix
+        h = _Locked(d, name)
         try:
-            os.lseek(fd, 0, os.SEEK_SET)
+            if os.fstat(h.fd).st_size + len(line) > max_bytes:
+                _require_regular_or_absent(d, old)       # never rotate over an unexpected object
+                _move(d, name, old)
+                h.reopen()
+            size = os.fstat(h.fd).st_size
+            if size and os.pread(h.fd, 1, size - 1) != b"\n":
+                line = b"\n" + line      # a crash left a torn last line: keep the fragment isolated, keep this record whole
+            n = os.write(h.fd, line)
+            if n != len(line):  # pragma: no cover - O_APPEND on a regular file writes whole
+                raise OSError("short write")
+        finally:
+            h.close()
+
+
+def rewrite_locked(directory, name: str, transform: Callable[[bytes], Optional[bytes]]) -> None:
+    """Under the append lock: read ``name``, pass it to ``transform`` and atomically replace it with the result (None = keep).
+
+    The lock is held until after the replace, so concurrent appends wait and then land in the new file.
+    """
+    with _Dir(directory, create=True) as d:
+        h = _Locked(d, name, require=True)
+        try:
+            chunks = []
             rfd = _open_file(d, name, os.O_RDONLY)
             try:
-                chunks = []
                 while True:
                     b = os.read(rfd, 1 << 20)
                     if not b:
@@ -382,10 +397,10 @@ def rewrite_locked(directory, name: str, transform: Callable[[bytes], Optional[b
             finally:
                 os.close(rfd)
             new = transform(b"".join(chunks))
+            if new is not None:
+                write_atomic(directory, name, new)
         finally:
-            os.close(fd)
-        if new is not None:
-            write_atomic(directory, name, new)
+            h.close()
 
 
 def update_locked(directory, name: str, fn: Callable[[Optional[bytes]], bytes]) -> None:
@@ -393,7 +408,7 @@ def update_locked(directory, name: str, fn: Callable[[Optional[bytes]], bytes]) 
     with _Dir(directory, create=True) as d:
         lfd = _open_file(d, name + ".lock", os.O_WRONLY, create=True)
         try:
-            _lock(lfd)                                   # bounded wait; the atomic replace still protects integrity
+            _lock(lfd, LOCK_WAIT)                        # bounded wait; the atomic replace still protects integrity
             try:
                 cur = read_bytes(directory, name)
             except UnsafeStorage:
