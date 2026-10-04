@@ -206,4 +206,3 @@ def resolve_range(spec: str, cwd=None, kind: str = "commit") -> RevisionRange:
     if _CONTROL.search(spec):
         raise RevisionError("control_characters", spec, "revision contains control characters or whitespace")
     return RevisionRange(spec, resolve(left or "HEAD", cwd, kind), resolve(right or "HEAD", cwd, kind), sym)
-

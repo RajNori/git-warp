@@ -85,4 +85,3 @@ def test_alias_does_not_hide_deny_of_literal_builtin():
 def test_every_subcommand_the_classifier_handles_is_a_builtin():
     from gitwarp.safety.classifier import GIT_SUBS, _HANDLERS
     assert set(_HANDLERS) <= GIT_BUILTINS and GIT_SUBS <= GIT_BUILTINS
-

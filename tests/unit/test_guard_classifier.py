@@ -180,7 +180,7 @@ WRAP = [
     "git --git-dir=/x/.git --work-tree=/x reset --hard", "git --git-dir /x/.git reset --hard", "git --no-pager reset --hard",
     "git -p reset --hard", "git -C a -C b -c x=y --no-pager reset --hard", "git-reset --hard", "timeout 5 git reset --hard",
     "timeout -s KILL 5 git reset --hard", "ionice -c 3 git reset --hard", "stdbuf -oL git reset --hard", "setsid git reset --hard",
-    "xargs git reset --hard", "xargs -n 1 git reset --hard", "xargs -I{} git reset --hard {}", 
+    "xargs git reset --hard", "xargs -n 1 git reset --hard", "xargs -I{} git reset --hard {}",
     "! git reset --hard", "if true; then git reset --hard; fi", "while true; do git reset --hard; done", "for i in 1 2; do git reset --hard; done",
     "{ git reset --hard; }", "{ echo a; git reset --hard; }", "(git reset --hard)", "( cd x && git reset --hard )", "((git reset --hard))",
     "echo a; git reset --hard", "echo a && git reset --hard", "echo a || git reset --hard", "echo a | git reset --hard", "echo a & git reset --hard",

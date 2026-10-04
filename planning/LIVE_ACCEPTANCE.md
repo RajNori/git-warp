@@ -239,4 +239,3 @@
 python3 tests/live/live_acceptance.py --budget 1.0        # full run (about 25 minutes, a few dollars of API usage)
 python3 tests/live/live_acceptance.py --only LIVE-006      # one scenario, or a group: discovery,guard,tui,recorder,skills,skills-tui
 ```
-
