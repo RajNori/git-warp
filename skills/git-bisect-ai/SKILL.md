@@ -7,13 +7,15 @@ allowed-tools: Read, Grep, Glob, Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/war
 
 # git-bisect-ai
 
+> Run `warp.py` from the repository directory: `--repo` defaults to the current directory. Do **not** pass `--repo "$PWD"` (or any shell expansion): Claude Code cannot analyse it statically and would prompt even though `warp.py` is pre-approved. If you must name another repository, use a literal absolute path.
+
 Locate a regression with evidence. Git Warp plans and validates; the user (or you, with their approval) runs git's own bisect. Git Warp NEVER starts a bisect and NEVER executes the test command.
 
 ## Workflow
 
 1. Establish refs. Ask for a known-good ref (tag, release, commit date you can look up with `git log --before=...`) and a known-bad ref (default HEAD). Confirm the symptom in one sentence and what "good" looks like.
 2. Plan (read-only):
-   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" bisect plan --good <ref> --bad <ref> [--test "<cmd>"] --repo "$PWD"`
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" bisect plan --good <ref> --bad <ref> [--test "<cmd>"]`
 3. Read the result:
    - `ready: false`: explain each `blockers[]` entry (dirty tree, operation in progress, good not an ancestor of bad, unknown ref, invalid test) and give its `suggest` options (`git stash push -u`, or an isolated worktree). Do not work around a blocker.
    - `range`: commit count and expected steps; merge commits mean non-linear history (suggest `--first-parent` first, then bisect inside the merge).

@@ -7,6 +7,8 @@ allowed-tools: Read, Grep, Glob, Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/war
 
 # git-rescue
 
+> Run `warp.py` from the repository directory: `--repo` defaults to the current directory. Do **not** pass `--repo "$PWD"` (or any shell expansion): Claude Code cannot analyse it statically and would prompt even though `warp.py` is pre-approved. If you must name another repository, use a literal absolute path.
+
 Recovery principle: **Preserve first. Investigate second. Mutate last.**
 
 Git rarely deletes work immediately. Commits that look gone are usually still in the reflog or dangling as unreachable objects. Pin them with a new branch before doing anything else.
@@ -21,15 +23,15 @@ Git rarely deletes work immediately. Commits that look gone are usually still in
 ## Workflow
 
 1. Gather evidence (read-only):
-   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" rescue scan --repo "$PWD"`
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" rescue scan`
    Narrow with `--since "2 hours ago"`, `--grep TEXT`, `--path PATH`; add `--no-fsck` if it is slow (and say stored dropped stashes will then be missed). If the user describes a time window or a file, use those filters.
 2. Read `state` (branch, detached, operation in progress, shallow) and `warnings` first. If an operation is in progress, tell the user before judging what is lost.
 3. Rank `candidates`: highest `confidence` first, then most recent. Match the user's description (subject, files, time) to candidates; ask one question if several fit.
 4. Inspect the best one (read-only):
-   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" rescue inspect <sha> --repo "$PWD"`
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" rescue inspect <sha>`
    Check `files`, `stat`, `ancestry_vs_head`, and `candidate_only_commits`.
 5. Offer preservation. Show the dry run first when the user wants to see it:
-   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" rescue preserve <sha> --dry-run --repo "$PWD"`
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" rescue preserve <sha> --dry-run`
    Run the real `preserve` only after the user agrees (or already asked you to save it). Then show the `verify` commands.
 6. Restoration into the working tree (switch to the branch, cherry-pick, or copy files) is a separate step: explain options, let the user choose, and prefer `git cherry-pick`/`git switch` on the preserved branch over anything destructive.
 

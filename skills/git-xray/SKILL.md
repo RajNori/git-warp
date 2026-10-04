@@ -7,6 +7,8 @@ allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*), Read, Gr
 
 # Git X-Ray
 
+> Run `warp.py` from the repository directory: `--repo` defaults to the current directory. Do **not** pass `--repo "$PWD"` (or any shell expansion): Claude Code cannot analyse it statically and would prompt even though `warp.py` is pre-approved. If you must name another repository, use a literal absolute path.
+
 Read-only diagnosis of the current repository. Git Warp gathers deterministic evidence as JSON; you verify and explain it. Never mutate the repository: suggest commands, do not run mutating ones (no add/commit/reset/stash/checkout/rebase/merge/push/clean).
 
 ## Step 1: gather evidence
@@ -82,7 +84,7 @@ WHY
 When the user asks whether a Git command would be allowed (or why the Git Warp guard blocked one), classify the text with the guard instead of running it. This only prints a verdict and never executes the command:
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" guard check "<git command text>" --repo "$PWD"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" guard check "<git command text>"
 ```
 
 Report the `decision` (`allow`, `ask` or `deny`), the reason and any safer alternative it lists. The live guard is a PreToolUse hook; this command is the same classifier, offered as a dry run.

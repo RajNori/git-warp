@@ -7,6 +7,8 @@ allowed-tools: Read, Grep, Glob, Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/war
 
 # git-archaeology
 
+> Run `warp.py` from the repository directory: `--repo` defaults to the current directory. Do **not** pass `--repo "$PWD"` (or any shell expansion): Claude Code cannot analyse it statically and would prompt even though `warp.py` is pre-approved. If you must name another repository, use a literal absolute path.
+
 Reconstruct how code came to be from Git evidence. Separate what git records (FACT) from what is guessed from it (INFERENCE), and admit what git cannot tell (UNKNOWN). Read-only.
 
 ## Workflow
@@ -16,7 +18,7 @@ Reconstruct how code came to be from Git evidence. Separate what git records (FA
    - a function/class/string: `... archaeology --symbol NAME` (git `-S`: commits that changed how often it occurs)
    - a pattern: `... archaeology --regex 'RE'` (git `-G`, POSIX ERE, no `\w`)
    - a "why" question with no code anchor: `... archaeology --question "why was caching removed"` (keywords matched against commit messages only)
-   Full command: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" archaeology <target-or-flags> --repo "$PWD"`
+   Full command: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" archaeology <target-or-flags>`
    Add `--since` or `--limit` for large histories. A symbol plus a path (`<path> --symbol NAME`) restricts the search.
 2. Read `warnings` and `truncated` first. If `truncated` is true, or `--since` was used, the introduction is NOT established; say so.
 3. Use the structured fields:

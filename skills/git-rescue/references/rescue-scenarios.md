@@ -1,7 +1,7 @@
 # Rescue scenarios
 
 All commands here are read-only unless marked PRESERVE. Replace `<sha>` with a full or 8-char id from `warp.py rescue scan`.
-Always start with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" rescue scan --repo "$PWD"`.
+Always start with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" rescue scan`.
 
 ## 1. Accidental `git reset --hard`
 - Signature: HEAD reflog entry `reset: moving to <target>`; candidate kind `reset-abandoned`; confidence usually high.
