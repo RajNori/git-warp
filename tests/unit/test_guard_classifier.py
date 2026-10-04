@@ -4,7 +4,7 @@ import pytest
 from gitwarp.core.config import Config
 from gitwarp.safety.classifier import classify_command, is_all_pathspec
 
-A, K, D = "allow", "ask", "deny"
+A, K, D = "defer", "ask", "deny"
 
 
 def verdict(cmd, branch="feature/x", mode="standard", protected=None):
@@ -327,6 +327,6 @@ def test_non_string_and_none_config():
 
 def test_operation_and_commands_fields():
     v = verdict("git status")
-    assert v.rule == "allow" and v.commands == ["git status"] and v.to_dict()["decision"] == "allow"
+    assert v.rule == "defer" and v.commands == ["git status"] and v.to_dict()["decision"] == "defer"
     v = verdict("git reset --hard")
     assert v.operation == "git reset --hard" and v.commands == ["git reset --hard"]

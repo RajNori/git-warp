@@ -202,6 +202,6 @@ def test_guard_cli_check(repo):
     assert data["decision"] == "deny" or data["decision"] == "ask"
     p = subprocess.run([sys.executable, str(SCRIPTS / "warp.py"), "guard", "check", "git status", "--branch", "feat"],
                        capture_output=True, text=True, timeout=30, cwd=repo.path)
-    assert json.loads(p.stdout)["decision"] == "allow"
+    assert json.loads(p.stdout)["decision"] == "defer"
     p = subprocess.run([sys.executable, str(SCRIPTS / "warp.py"), "guard"], capture_output=True, text=True, timeout=30)
     assert p.returncode != 0 and "error" in json.loads(p.stdout)
