@@ -471,6 +471,7 @@ class _Ctx:
         self.vars: dict = {}                          # name -> [static value | _UNKNOWN | _TAINT, ...] assigned in this string
         self.written: set = set()                     # files written by redirection / tee earlier in this string
         self.exec_env: set = set()                    # exec-bearing environment assignments seen in this string
+        self.path_changed = False                     # PATH assigned in this string (prefix, standalone, export, env)
         self.settled = False                          # a handler proved the mode harmless regardless of dynamic words (dry-run)
         self.dyn_seen: list = []                # dynamic option-position words seen by the current handler
 
@@ -885,7 +886,7 @@ GIT_NO_LAZY_FETCH GIT_TRACE_CURL_NO_DATA GIT_TRACE_REDACT""".split())
 #   anything that redirects the repository (DIR, WORK_TREE, INDEX_FILE, OBJECT_DIRECTORY, ALTERNATE_OBJECT_DIRECTORIES, NAMESPACE,
 #   COMMON_DIR), anything that weakens integrity or security (SSL_NO_VERIFY, REF_PARANOIA, COMMIT_GRAPH_PARANOIA), and variables whose effect is
 #   not obviously inert (INDEX_VERSION, DEFAULT_HASH, DEFAULT_REF_FORMAT, SSH_VARIANT, REDIRECT_STDIN, DIFF_PATH_*, EXTERNAL_DIFF_TRUST_EXIT_CODE).
-_DIFF_OPTS_OK = re.compile(r"^(--unified=\d{1,4}|-[uU]\d{1,4})$")
+_DIFF_OPTS_OK = re.compile(r"^(--unified=\d+|-[uU]\d+)$")
 _ENV_SAFE_VALUES = {"GIT_PAGER": _SAFE_ENV_VALUES, "GIT_EDITOR": _SAFE_ENV_VALUES, "GIT_SEQUENCE_EDITOR": _SAFE_ENV_VALUES,
                     "PAGER": _SAFE_ENV_VALUES, "EDITOR": _SAFE_ENV_VALUES, "VISUAL": _SAFE_ENV_VALUES, "BROWSER": _SAFE_ENV_VALUES}
 _ENV_NON_GIT_EXEC = frozenset("""SSH_ASKPASS ASKPASS LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH PAGER EDITOR
@@ -904,6 +905,8 @@ def _env_exec(name: str, value: str, ctx: "_Ctx") -> None:
     n = name.rstrip("+")
     v = value.strip().strip("'\"")
     dyn = value == "$dynamic"
+    if n == "PATH":
+        ctx.path_changed = True
     if n.startswith("GIT_CONFIG_KEY_"):
         if dyn or _exec_config(v, "x") or v.lower().startswith("protocol."):
             ctx.exec_env.add(n)
@@ -1326,7 +1329,7 @@ def _h_submodule(rest, ctx, cands):
 # sort (-o) uniq (second operand is an output file) find (-delete/-exec) xargs env nohup ...  `git` is allowed only in read-only forms.
 RUNNER_SAFE = frozenset("""echo printf true false : test [ [[ cat head tail ls pwd wc stat file diff cmp grep egrep fgrep date sleep
 basename dirname which type""".split())
-_FD_TARGET = re.compile(r"^(\d+|-|/dev/null|&\d+)$")
+_NULL_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
 
 
 def _runner_cmds_safe(cmds: List[Cmd]) -> bool:
@@ -1334,12 +1337,12 @@ def _runner_cmds_safe(cmds: List[Cmd]) -> bool:
     for c in cmds:
         if not c.words:
             continue
-        if any(not _FD_TARGET.match(t) for t in c.redirs):
+        if any(t not in _NULL_TARGETS for t in c.redirs):       # only real file writes are recorded: any of them is a side effect
             return False
         head = c.words[0]
         if head.dyn:
             return False
-        name = posixpath.basename(head.text)
+        name = head.text                 # BARE name only: `./test`, `/bin/cat`, `~/x`, `a/b` are repo/user-controlled paths -> not exempt
         if name == "git":
             if not _benign_cmds([c]):            # read-only subcommand (or branch --list), no --output
                 return False
@@ -1360,7 +1363,8 @@ def _runs_program(words: List[Word], tool: str, ctx: _Ctx, text: Optional[str] =
     safe = False
     try:
         cmds = parse_script(text, ctx.budget, ctx.depth + 1) if text is not None else [Cmd(words=list(words))]
-        safe = not head.dyn and _runner_cmds_safe(cmds)
+        # a PATH assignment in the same string could make a bare name resolve to a repo-controlled executable
+        safe = not head.dyn and not ctx.path_changed and _runner_cmds_safe(cmds)
     except ShellParseError:
         safe = False
     if not safe:
@@ -1788,8 +1792,8 @@ def _rm(args: List[Word], ctx: _Ctx) -> None:
 def _cmds(cmds: List[Cmd], ctx: _Ctx, depth: int) -> None:
     for cmd in cmds:
         _words(cmd.words, cmd, ctx, depth)
-        for target in cmd.redirs:
-            if target and not target.startswith("&") and target not in ("/dev/null", "1", "2"):
+        for target in cmd.redirs:        # the tokenizer only records real FILE writes (never `2>&1` / `>&-`)
+            if target and target not in ("/dev/null", "/dev/stdout", "/dev/stderr"):
                 ctx.written.add(_norm_path(target))
 
 
