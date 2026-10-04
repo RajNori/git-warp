@@ -31,9 +31,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tui_driver   # noqa: E402  (real interactive TUI through a pty)
 SYNTHETIC_SECRET = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
-SKILL_CMDS = {  # skill -> (prompt arguments, warp.py subcommand it must run)
-    "git-xray": ("", "xray"), "git-pr": ("base main", "pr"), "git-rescue": ("", "rescue"),
-    "git-archaeology": ("src/util.py", "archaeology"), "git-bisect-ai": ("good HEAD~5 bad HEAD", "bisect"),
+SKILL_CMDS = {  # skill -> (prompt arguments exactly as the skill's argument-hint documents them, warp.py subcommand it must run)
+    "git-xray": ("", "xray"), "git-pr": ("main", "pr"), "git-rescue": ("I deleted the branch gone/precious; find the lost commit", "rescue"),
+    "git-archaeology": ("src/util.py", "archaeology"), "git-bisect-ai": ("--good HEAD~5 --bad HEAD", "bisect"),
     "git-commits": ("", "commits"), "git-blast-radius": ("src/util.py", "blast"), "git-conflict": ("", "conflict"),
     "git-temporal-review": ("", "temporal"), "git-memory": ("hotspots", "memory"),
 }
@@ -315,6 +315,8 @@ class Acceptance:
         args, cmdname = SKILL_CMDS[skill]
         conflict = skill == "git-conflict"
         repo = self.repo("tui-" + skill, conflict=conflict)
+        if skill == "git-pr":
+            sh(repo, "checkout", "-q", "feature/x")
         before = (sh(repo, "rev-parse", "HEAD"), sh(repo, "status", "--porcelain"), sh(repo, "for-each-ref"))
         prompt = (f"Invoke the skill git-warp:{skill} with the Skill tool{(' using arguments: ' + args) if args else ''}, follow it, "
                   "and finish with a 3-line summary. Do not modify the repository.")
@@ -326,8 +328,15 @@ class Acceptance:
         ev = [f"dialogs={kinds}", f"warp.py {cmdname} appears in the session: {ran}", f"repo unchanged: {before == after}"]
         if "skill-approval" not in kinds or not ran:
             return "INCONCLUSIVE", ev, 0.0
-        unexpected = [k for k in kinds if k not in ("skill-approval",)]
-        return ("PASS" if not unexpected and before == after else "FAIL"), ev + [f"unexpected permission dialogs: {unexpected}"], 0.2
+        bash_prompts = [d for d in r.dialogs if d.kind == "claude-own-bash-permission"]
+        warp_prompts = [d for d in bash_prompts if "warp.py" in d.text]
+        other_prompts = [d for d in bash_prompts if "warp.py" not in d.text]
+        ev.append(f"prompts for the warp.py call (allowed-tools pattern failed to match): {len(warp_prompts)}")
+        for d in other_prompts:
+            ev.append("note: a prompt for a different command (not covered by this skill's allowed-tools): " + d.text[-260:])
+        for d in warp_prompts:
+            ev.append("FAIL detail: " + d.text[-260:])
+        return ("PASS" if not warp_prompts and before == after else "FAIL"), ev, 0.2
 
     def sc_skill_and_recorder(self):
         repo = self.repo("recorder")
@@ -350,6 +359,8 @@ class Acceptance:
         args, cmdname = SKILL_CMDS[skill]
         conflict = skill == "git-conflict"
         repo = self.repo("wf-" + skill, conflict=conflict)
+        if skill == "git-pr":
+            sh(repo, "checkout", "-q", "feature/x")
         before = (sh(repo, "rev-parse", "HEAD"), sh(repo, "status", "--porcelain"), sh(repo, "for-each-ref"))
         prompt = (f"Invoke the skill git-warp:{skill} with the Skill tool{(' using arguments: ' + args) if args else ''}, follow it, "
                   "and finish with a 3-line summary of the evidence you found. Do not modify the repository.")
