@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#161b22"/><stop offset="1" stop-color="#0d1117"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <!-- shield: the guard -->
+  <path d="M512 150 L800 255 V505 C800 690 680 815 512 880 C344 815 224 690 224 505 V255 Z"
+        fill="#1c2128" stroke="#D97757" stroke-width="44" stroke-linejoin="round"/>
+  <!-- git graph: main line + branch merging back -->
+  <g fill="none" stroke="#e6edf3" stroke-width="40" stroke-linecap="round">
+    <line x1="430" y1="330" x2="430" y2="700"/>
+    <path d="M430 640 C430 560 600 580 600 490 V420"/>
+  </g>
+  <circle cx="430" cy="330" r="46" fill="#1c2128" stroke="#e6edf3" stroke-width="36"/>
+  <circle cx="430" cy="700" r="46" fill="#1c2128" stroke="#e6edf3" stroke-width="36"/>
+  <circle cx="600" cy="390" r="56" fill="#D97757"/>
+</svg>
