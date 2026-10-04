@@ -1,13 +1,13 @@
 {
-  "description": "Git Warp lifecycle hooks: inject repository state, block dangerous Git operations, track change risk, and produce an end-of-turn Git health report.",
+  "description": "Git Warp hooks: deterministic Git safety guard, repository context at session start, flight recorder, and end-of-turn change report.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/session_context.py\"",
-            "timeout": 10
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_session_start.py\"",
+            "timeout": 15
           }
         ]
       }
@@ -18,20 +18,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/git_guard.py\"",
-            "timeout": 5
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_git_guard.py\"",
+            "timeout": 10
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/change_tracker.py\"",
-            "timeout": 5
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_post_tool.py\"",
+            "timeout": 10
           }
         ]
       }
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/stop_report.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hook_stop.py\"",
             "timeout": 20
           }
         ]

@@ -1,0 +1,1 @@
+"""Git Warp hooks layer."""

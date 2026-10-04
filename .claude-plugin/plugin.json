@@ -1,18 +1,20 @@
 {
   "name": "git-warp",
   "version": "0.1.0",
-  "description": "Agentic Git intelligence for Claude Code: safety guardrails, repository forensics, recovery, blast-radius analysis, PR readiness, and AI-assisted bisect workflows.",
+  "description": "Git intelligence for Claude Code: a deterministic safety guard against destructive Git commands, plus history archaeology, recovery, blast-radius, semantic commit planning, conflict analysis, PR review and a local repository memory.",
   "author": {
-    "name": "Rajnori"
+    "name": "Raj Nori"
   },
   "license": "MIT",
   "keywords": [
     "git",
-    "code-review",
+    "safety",
     "forensics",
     "recovery",
+    "code-review",
     "pull-requests",
-    "developer-tools",
-    "safety"
-  ]
+    "bisect",
+    "developer-tools"
+  ],
+  "repository": "https://github.com/RajNori/git-warp"
 }
