@@ -61,6 +61,10 @@ def migrate(conn: sqlite3.Connection) -> int:
             raise IncompatibleSchema("warp.db has unknown contents")
     conn.execute("BEGIN IMMEDIATE")
     try:
+        cur2 = conn.execute("PRAGMA user_version").fetchone()[0]      # another process may have initialised it meanwhile
+        if cur2 > cur:
+            conn.execute("COMMIT")
+            return migrate(conn)
         for v in range(cur + 1, SCHEMA_VERSION + 1):
             for stmt in MIGRATIONS[v]:
                 conn.execute(stmt)
