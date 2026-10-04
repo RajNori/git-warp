@@ -116,7 +116,17 @@ class GitTimeout(GitError):
 
 
 class GitRefused(GitError):
-    """The command was refused before execution (not allowlisted, or carries a forbidden option)."""
+    """The command was refused before execution (not allowlisted, forbidden option, or an unsafe-to-continue condition).
+
+    ``reason`` is a stable code: ``policy`` (allowlist/option rules), ``filter_enumeration_incomplete``,
+    ``too_many_filters``.
+    """
+
+    reason = "policy"
+
+    def __init__(self, message: str, args_: Sequence[str] = (), returncode: int = 129, stderr: str = "", reason: str = "policy"):
+        super().__init__(message, args_, returncode, stderr)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -278,42 +288,70 @@ def _check_subcommand(sub: str, rest: list, args: Sequence[str]) -> None:
             raise _refuse("config is allowed for read-only queries only", args)
 
 
-def _filter_overrides(cwd, env: dict) -> list:
+_FILTER_ENUM_CAP = 8 << 20      # bytes of ``git config`` output we are willing to parse
+_MAX_FILTER_NAMES = 1000        # more repository-scoped filter drivers than this cannot be neutralised on a command line
+
+
+def _filter_overrides(cwd, env: dict, args: Sequence[str] = ()) -> list:
     """``-c filter.<n>.clean=`` etc. for filters defined by the repository's own config (not user/system scope).
 
+    Fails CLOSED: if the enumeration is truncated, times out, errors, or cannot be parsed completely, or if there
+    are more filters than fit on a command line, raises :class:`GitRefused` (``filter_enumeration_incomplete`` /
+    ``too_many_filters``) so the work-tree-reading command is NOT run with a partial override list.
     Without ``--show-scope`` support (git < 2.26) every filter is emptied (safe, possibly noisy).
     """
+    def incomplete(why: str) -> GitRefused:
+        return GitRefused(f"refusing to run: repository filter enumeration is incomplete ({why})", list(args), 129, "",
+                          reason="filter_enumeration_incomplete")
+
     base = ["git", "--no-pager", "--no-optional-locks", "config"]
     pattern = r"^filter\..*\.(clean|smudge|process)$"
     scoped = True
     try:
-        rc, out, _, _ = _exec([*base, "--show-scope", "--null", "--get-regexp", pattern], cwd, env, 10, None, 1 << 20, 1 << 16)
-        if rc not in (0, 1):
+        rc, out, _, trunc = _exec([*base, "--show-scope", "--null", "--get-regexp", pattern], cwd, env, 10, None, _FILTER_ENUM_CAP, 1 << 16)
+        if rc not in (0, 1, 128) and not trunc:
             scoped = False
-            rc, out, _, _ = _exec([*base, "--null", "--get-regexp", pattern], cwd, env, 10, None, 1 << 20, 1 << 16)
-    except (GitError, OSError, subprocess.TimeoutExpired):
-        return []
+            rc, out, _, trunc = _exec([*base, "--null", "--get-regexp", pattern], cwd, env, 10, None, _FILTER_ENUM_CAP, 1 << 16)
+    except (FileNotFoundError, NotADirectoryError):
+        return []          # no such directory / no git binary: the command itself will raise the typed error
+    except subprocess.TimeoutExpired:
+        raise incomplete("timed out") from None
+    except (GitError, OSError) as e:
+        raise incomplete(type(e).__name__) from None
+    if rc == 128:
+        return []          # not a repository / unreadable config: the real command fails the same way and runs nothing
+    if trunc:
+        raise incomplete("output exceeded the capture cap")
     if rc not in (0, 1):
-        return []
-    keys, seen = [], set()
+        raise incomplete(f"git config exited {rc}")
     toks = out.split("\x00")
+    if toks and toks[-1] == "":
+        toks.pop()
+    elif toks:
+        raise incomplete("output not NUL-terminated")
     if scoped:      # --null --show-scope prints  <scope> NUL <key> NL <value> NUL
-        records = [(toks[i], toks[i + 1]) for i in range(0, len(toks) - 1, 2)]
+        if len(toks) % 2:
+            raise incomplete("unparseable record stream")
+        records = [(toks[i], toks[i + 1]) for i in range(0, len(toks), 2)]
     else:
-        records = [("", t) for t in toks if t]
+        records = [("", t) for t in toks]
+    names = []
+    seen = set()
     for scope, rec in records:
         if scope.strip() in ("system", "global"):
             continue
         key = rec.split("\n", 1)[0]
-        if not _FILTER_KEY.match(key) or key.lower() in seen:
-            continue
-        seen.add(key.lower())
-        keys.append(key)
-    names = []
-    for k in keys:
-        name = k[len("filter."):k.rindex(".")]
-        if name not in names:
+        if not _FILTER_KEY.match(key):
+            raise incomplete("unparseable key")
+        name = key[len("filter."):key.rindex(".")]
+        if "=" in name or "\n" in name or "\x00" in name:
+            raise incomplete("a filter name cannot be expressed as a -c override")   # fail closed
+        if name not in seen:                     # subsection names are case-sensitive
+            seen.add(name)
             names.append(name)
+    if len(names) > _MAX_FILTER_NAMES:
+        raise GitRefused(f"refusing to run: {len(names)} repository-scoped filter drivers cannot be neutralised", list(args), 129, "",
+                         reason="too_many_filters")
     out_args = []
     for name in names:     # empty commands, and `required=false` so git does not die on a filter it may not run
         for suffix, val in (("clean", ""), ("smudge", ""), ("process", ""), ("required", "false")):
@@ -430,7 +468,7 @@ def run(
             argv += ["-c", kv]
         argv += [f for f in flags if f not in ("--no-pager", "--no-optional-locks")]
         if sub in _FILTER_CMDS:
-            argv += _filter_overrides(work_dir, environ)
+            argv += _filter_overrides(work_dir, environ, args)
         argv.append(sub)
         if sub in _PATCH_CMDS:
             argv += ["--no-ext-diff", "--no-textconv"]
