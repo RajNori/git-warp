@@ -70,7 +70,7 @@ hardened afterwards, then independently compared against a second implementation
 ### Tests
 - Unit, integration, security, acceptance (repository-state matrix, recovery fixtures, Guardian corpus, hostile
   repository and hostile environment fixtures), crash/concurrency and scale suites; an opt-in live Claude Code runner
-  (`tests/live/live_acceptance.py`). Result at release: 3109 passed (baseline 1345; audit in `planning/BASELINE_TEST_AUDIT.md`).
+  (`tests/live/live_acceptance.py`). Result at release: 3994 passed, 0 failed, 0 skipped (baseline 1345; audit in `planning/BASELINE_TEST_AUDIT.md`).
 
 ### Known limitations
 - The guard is a safety net, not a sandbox; it does not emulate a shell and only sees Bash command strings
