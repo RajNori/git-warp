@@ -127,12 +127,37 @@ def test_missing_cwd_uses_process_cwd(repo):
     assert decision(call(ev, cwd=repo.path)) == "deny"
 
 
+@pytest.mark.parametrize("raw", ['{"tool_name": "Bash", "tool_input": {"command": ""}}', '{"tool_name": "Bash", "tool_input": {"command": "  "}}',
+                                  '{"tool_input":{"command":"ls"}}', '{"tool_name": "Read", "tool_input": []}'])
+def test_nothing_to_classify_is_defer(raw):
+    """Payloads that provably carry no command are DEFER (`{}`)."""
+    assert call(None, raw=raw) == {}
+
+
 @pytest.mark.parametrize("raw", ["", "   ", "not json", "{", "[]", "null", "5", '"str"', "{}", '{"tool_name": "Bash"}',
                                   '{"tool_name": "Bash", "tool_input": null}', '{"tool_name": "Bash", "tool_input": {"command": 5}}',
-                                  '{"tool_name": "Bash", "tool_input": {"command": ""}}', '{"tool_name": "Bash", "tool_input": []}',
-                                  '{"tool_input": {"command": "x"}, "tool_name": 7}', "\x00\x01", '{"tool_input":{"command":"ls"}}'])
-def test_malformed_input_is_a_noop(raw):
-    assert call(None, raw=raw) == {}
+                                  '{"tool_name": "Bash", "tool_input": []}', '{"tool_name": "Bash", "tool_input": {}}',
+                                  '{"tool_input": {"command": "x"}, "tool_name": 7}', "\x00\x01", "[" * 100000,
+                                  '{"tool_name": {"a": 1}, "tool_input": {"command": "ls"}}'])
+def test_uninterpretable_payload_is_ask_never_silent(raw):
+    """Changed from the old 'noop' expectation: a payload that could be a Bash command but cannot be read must ASK."""
+    out = call(None, raw=raw)
+    assert decision(out) == "ask", out
+    hs = out["hookSpecificOutput"]
+    assert hs["hookEventName"] == "PreToolUse" and hs["permissionDecisionReason"].startswith("Git Warp")
+    assert set(out) == {"hookSpecificOutput"}
+
+
+def test_oversized_payload_is_ask():
+    from gitwarp.hooks import git_guard
+    out = call(None, raw='{"tool_name":"Bash","tool_input":{"command":"echo ' + "a" * (git_guard.MAX_PAYLOAD_CHARS + 10) + '"}}')
+    assert decision(out) == "ask" and "oversized" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_invalid_utf8_stdin_is_not_a_crash():
+    p = subprocess.run([sys.executable, str(HOOK)], input=b'{"tool_name":"Bash","tool_input":{"command":"git reset --hard \\xff"}}',
+                       capture_output=True, timeout=30)
+    assert p.returncode == 0 and json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"] in ("ask", "deny")
 
 
 @pytest.mark.parametrize("tool", ["Write", "Edit", "Read", "Grep", "mcp__x__y", "bash", ""])
