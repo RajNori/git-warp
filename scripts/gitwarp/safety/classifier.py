@@ -23,9 +23,16 @@ subcommand (reset, clean, push, checkout, restore, branch, switch, stash, tag, r
 Such constructs are ``ask`` (or ``deny`` when the literal part already proves destruction).  Dynamic words stay
 ``defer`` in read-only Git commands (log, diff, show, status, rev-parse, merge-base, ls-files, ...) and in non-Git
 commands, and a substitution whose every command is a read-only Git command (or ``date``/``pwd``/``whoami``...) is
-treated as a harmless producer.  Plain ``$VAR`` operands stay ``defer`` unless the variable was assigned in the same
-command string a value that is option-like, mentions git, or is itself dynamic; assignments are tracked literally
-(a variable assigned exactly once with a static value is substituted, never evaluated).
+treated as a harmless producer.  Variable boundary inside a destructive-capable subcommand: an UNQUOTED word that starts
+with an expansion (``$V``, ``${V}``) is word-split and may become several words including options, so it is ``ask`` in
+any position; a QUOTED one is a single word but is ``ask`` before the first positional operand (where options sit) and an
+ordinary operand after it (``git push origin "$BRANCH"`` stays ``defer``).  A variable assigned in the same command
+string is the exception: exactly one static value is substituted (never evaluated), a value assigned only from read-only
+Git output cannot be an option, an option-like / computed / multiply-assigned value is ``ask`` (or ``deny`` if the literal
+proves destruction).  Dry-run modes that Git guarantees win over any other flag (``clean -n``, ``push -n``) settle the
+command; ``reset --soft $X`` does not (real Git: a later ``--hard`` wins).  File-writing options on read-looking
+commands (``--output`` on diff/log/show/..., ``format-patch -o``, ``archive -o``, ``bundle create``, ``fast-export
+--export-marks``, ``grep -O``) and ``-c`` keys that execute programs are ``ask`` (rules ``output-file``, ``config-exec``).
 """
 from __future__ import annotations
 
@@ -265,6 +272,13 @@ RULES = {
                           "A forced fetch/pull refspec overwrites or rewinds the local branch '{branch}'.",
                           "Local commits on that branch can be lost.",
                           ["git fetch origin  # update remote-tracking refs only", "git branch rescue/pre-fetch  # keep the old tip"]),
+    "output-file": ("ask", "git command writing a file",
+                    "`git {tool}` is given an option that creates or truncates a file ({opt}) or runs a helper program.",
+                    "Read-only looking Git commands can overwrite an arbitrary path with these options.",
+                    ["Print to the terminal and redirect explicitly, or review the target path first"]),
+    "config-exec": ("ask", "git -c <config that runs a program>",
+                    "An inline `-c {tool}` sets a Git config key that makes Git execute a program (pager, editor, fsmonitor, hooks, ...).",
+                    "The program is not visible to the guard and runs with your privileges.", ["Run the Git command without the -c override"]),
     "env-alias": ("ask", "GIT_CONFIG alias via environment",
                   "An alias is injected through GIT_CONFIG_* environment variables.",
                   "Aliases can run arbitrary commands the guard cannot classify.", ["Run the real command spelled out"]),
@@ -362,7 +376,7 @@ class Opts:
             if w.dyn:
                 self.has_dyn = True
                 if ctx is not None and not seen_dd and t != "--":
-                    ctx.dyn_seen.append(w)      # dynamic word in an option-capable position (values of known options are consumed below)
+                    ctx.dyn_seen.append((w, bool(self.pos)))      # dynamic word in an option-capable position (values of known options are consumed below)
                 if t.startswith("-") and not w.bare and not seen_dd:
                     self.dyn_flag = True
             if seen_dd:
@@ -425,7 +439,8 @@ class _Ctx:
         self.mentions_git = False                     # the whole command string mentions git
         self.vars: dict = {}                          # name -> [static value | _UNKNOWN | _TAINT, ...] assigned in this string
         self.written: set = set()                     # files written by redirection / tee earlier in this string
-        self.dyn_seen: List[Word] = []                # dynamic option-position words seen by the current handler
+        self.settled = False                          # a handler proved the mode harmless regardless of dynamic words (dry-run)
+        self.dyn_seen: list = []                # dynamic option-position words seen by the current handler
 
     def protected(self, name: Optional[str]) -> bool:
         if not name:
@@ -452,7 +467,10 @@ class _Ctx:
             st = _TAINT
         else:
             src = _var_name(w)
-            st = self.var_state(src) if src else _UNKNOWN
+            if src:
+                st = self.var_state(src)
+            else:
+                st = _BENIGN if (w.subs and w.varexp == 0) else _UNKNOWN   # only read-only Git / date-like producers
             if st is None:
                 st = _UNKNOWN
         if append and name in self.vars:
@@ -470,12 +488,12 @@ class _Ctx:
             return vals[0]
         if any(v is _TAINT or (isinstance(v, str) and _val_risky(v)) for v in vals):
             return _TAINT
-        return _UNKNOWN
+        return _BENIGN if all(v is _BENIGN for v in vals) else _UNKNOWN
 
 
 def _sub(text: str, fmt: dict) -> str:
     """Substitute {branch}/{tool}/{path} only (other braces, e.g. stash@{N}, stay literal)."""
-    return re.sub(r"\{(branch|tool|path)\}", lambda m: str(fmt.get(m.group(1), "?")), text)
+    return re.sub(r"\{(branch|tool|path|opt)\}", lambda m: str(fmt.get(m.group(1), "?")), text)
 
 
 def _joined(words: List[Word], limit: int = 12) -> str:
@@ -484,6 +502,7 @@ def _joined(words: List[Word], limit: int = 12) -> str:
 
 
 # ------------------------------------------------------------------- dynamic-word analysis (never executes anything)
+_BENIGN = object()       # variable assigned only from read-only Git / harmless producers: cannot be an option
 _UNKNOWN = object()      # variable assigned something we cannot read, but not alarming (e.g. $(git rev-parse HEAD))
 _TAINT = object()        # variable assigned a computed value (non-benign substitution)
 READONLY_GIT = frozenset("""log show diff status rev-parse rev-list merge-base describe ls-files ls-tree cat-file for-each-ref
@@ -554,6 +573,28 @@ def _risky_word(w: Word, ctx: "_Ctx") -> bool:
     return False
 
 
+def _uncertain_position(w: Word, seen_pos: bool, ctx: "_Ctx") -> bool:
+    """Boundary for dynamic words in a destructive-capable Git subcommand (documented in the module docstring):
+    * a command substitution that is not provably harmless, or a variable assigned an option-like / computed value -> uncertain;
+    * an UNQUOTED word that starts with an expansion (``$V``, ``${V}``, ``$A$B``) is word-split and may become several
+      words including options -> uncertain in ANY position;
+    * a QUOTED one is a single word, but before the first positional operand (where options normally sit) it can still be
+      ``--force`` -> uncertain; after a positional operand it is an operand (``git push origin "$BRANCH"``) -> not.
+    A variable with a known static value, or assigned only from read-only Git output, is provably harmless."""
+    if _risky_word(w, ctx):
+        return True
+    if w.varexp == 0 or w.text[:1] != "$":
+        return False
+    n = _var_name(w)
+    if n is not None:
+        st = ctx.var_state(n)
+        if st is _BENIGN or isinstance(st, str):
+            return False
+    elif w.subs and all(_benign_cmds(c) for c in w.subs) and w.varexp == 0:
+        return False
+    return (not w.quoted) or (not seen_pos)
+
+
 def _subst_known(words: List[Word], ctx: "_Ctx"):
     """Literal substitution of plain ``$VAR`` operands whose single static assignment is visible in this same command
     string.  Returns (words, flagged); ``flagged`` means a variable carried an option-like / computed value."""
@@ -568,6 +609,8 @@ def _subst_known(words: List[Word], ctx: "_Ctx"):
         if st is _TAINT:
             flagged = True
             out.append(w)
+        elif st is _BENIGN:
+            out.append(Word("REV~0"))            # read-only Git output: cannot be an option; rev-like placeholder keeps branch checks
         elif isinstance(st, str):
             if _PLAIN_VALUE.match(st):
                 parts = st.split()
@@ -636,6 +679,9 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
     for c in cfgs:
         if c.lower().startswith("alias."):
             ctx.add("alias-inline")
+        elif _EXEC_CONFIG.match(c.partition("=")[0].strip()) and not (
+                c.partition("=")[0].strip().lower().startswith(("core.pager", "pager.")) and c.partition("=")[2].strip().strip("'\"") in _SAFE_PAGERS):
+            ctx.add("config-exec", tool=c.partition("=")[0].strip()[:60])
     if sub is None or info_only:
         return
     if sub.dyn or sub.glob:
@@ -646,6 +692,9 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
         return
     rest, flagged = _subst_known(rest, ctx)
     name = sub.text
+    opt = _output_file_option(name, rest)
+    if opt:
+        ctx.add("output-file", tool=name, opt=opt)
     if sub_override is None and name not in GIT_BUILTINS:
         ctx.add("unknown-subcommand", tool=name[:60])
         return
@@ -658,6 +707,7 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
         _gc_config(cfgs, ctx)
     before = len(ctx.found)
     ctx.dyn_seen = []
+    ctx.settled = False
     if fn is not None:
         fn(rest, ctx, cands)
     elif name in _DESTRUCTIVE_SUBS:
@@ -667,7 +717,8 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
             and any(w.dyn and not w.bare and w.text.startswith("-") for w in rest)):
         ctx.add("option-unresolved")   # e.g. `git reset --hard$IFS`: a flag we cannot read on a destructive-capable subcommand
     elif name in _DESTRUCTIVE_SUBS and not _read_only_form(name, rest):
-        if flagged or (name != "submodule" and any(_risky_word(w, ctx) for w in dyn_seen)):
+        foreach = name == "submodule" and any(not w.dyn and w.text == "foreach" for w in rest)
+        if flagged or (not ctx.settled and not foreach and any(_uncertain_position(w, seen_pos, ctx) for w, seen_pos in dyn_seen)):
             ctx.add("dynamic-argument")
     if name in ("checkout", "switch") and not dir_override:
         _track_branch(name, rest, ctx)
@@ -685,6 +736,49 @@ def _gc_config(cfgs: List[str], ctx: _Ctx) -> None:
         m = _EXPIRE_NOW.match(c.strip())
         if m:
             ctx.add("gc-prune-now" if m.group(1).lower() == "prune" else "reflog-destroy")
+
+
+_EXEC_CONFIG = re.compile(r"^(core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|alternaterefscommand)|pager\..+|"
+                          r"diff\.(external|[^.]+\.(textconv|command))|credential(\..+)?\.helper|sequence\.editor|gpg(\..+)?\.program|"
+                          r"merge\..+\.(driver|name)|filter\..+\.(clean|smudge|process)|ssh\.variant|uploadpack\.packobjectshook|"
+                          r"core\.fsmonitor|difftool\..+\.cmd|mergetool\..+\.cmd|browser\..+\.cmd|web\.browser)$", re.I)
+_SAFE_PAGERS = frozenset({"", "cat", "less", "more", "less -FRX", "less -R", "false", "true"})
+_OUTPUT_DIFFLIKE = frozenset("""diff log show whatchanged reflog diff-tree diff-index diff-files range-diff shortlog blame rev-list
+format-patch archive stash""".split())
+
+
+def _prefix_opt(t: str, full: str, minlen: int = 3) -> bool:
+    """``t`` is ``--name[=value]`` where ``name`` is an unambiguous-looking abbreviation of ``full`` (Git accepts prefixes)."""
+    if not t.startswith("--") or len(t) <= 2:
+        return False
+    n = t[2:].split("=", 1)[0]
+    return len(n) >= minlen and full.startswith(n)
+
+
+def _output_file_option(name: str, rest: List[Word]) -> Optional[str]:
+    """First option on ``rest`` that makes ``git <name>`` write a file or run a helper (``--output=F`` on diff/log/show...,
+    ``format-patch -o``, ``archive -o``, ``bundle create``, ``fast-export --export-marks``, ``grep -O``; ``fsck --lost-found`` only writes inside .git and is the guard's own suggested safe path, so it is not flagged).
+    ``--output-indicator-*`` / ``--output-directory`` (outside format-patch) are different options and are not matched."""
+    words = []
+    for w in rest:
+        if w.text == "--":
+            break
+        if not w.dyn or w.text.startswith("-"):
+            words.append(w.text)
+    if name == "bundle":
+        return "create" if next((t for t in words if not t.startswith("-")), "") == "create" else None
+    for t in words:
+        if name in _OUTPUT_DIFFLIKE and name != "stash" and _prefix_opt(t, "output"):
+            return t.split("=", 1)[0]
+        if name == "format-patch" and (t == "-o" or (t.startswith("-o") and not t.startswith("--")) or _prefix_opt(t, "output-directory")):
+            return t.split("=", 1)[0]
+        if name == "archive" and (t == "-o" or (t.startswith("-o") and not t.startswith("--"))):
+            return "-o"
+        if name == "fast-export" and _prefix_opt(t, "export-marks"):
+            return "--export-marks"
+        if name == "grep" and (t.startswith("-O") or _prefix_opt(t, "open-files-in-pager")):
+            return "--open-files-in-pager"
+    return None
 
 
 def _read_only_form(name: str, rest: List[Word]) -> bool:
@@ -738,6 +832,7 @@ def _h_clean(rest, ctx, cands):
     dry = "n" in o.shorts or o.lopt("dry-run", 2)
     interactive = "i" in o.shorts or o.lopt("interactive", 3)
     if dry or interactive:
+        ctx.settled = True               # -n / -i win over any force flag, whatever its position or origin
         return
     if "f" in o.shorts or o.lopt("force", 3):
         ctx.add("clean-force")
@@ -846,6 +941,7 @@ def _h_push(rest, ctx, cands):
     all_ = o.lopt("all", 3) or "branches" in o.longs
     refspecs = o.all_pos[1:]
     if "n" in o.shorts or o.lopt("dry-run", 3):
+        ctx.settled = True
         return  # nothing is sent
     if o.lopt("prune", 3):
         ctx.add("push-prune")

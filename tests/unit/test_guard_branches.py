@@ -26,7 +26,7 @@ def v(cmd, branch="feature/x"):
     ("git update-ref -m msg refs/heads/feature/x abc", "defer"), ("git branch -D", "ask"), ("git branch -f", "defer"), ("git branch -c a b", "defer"),
     ("git branch --move --force a b", "ask"), ("git branch -u origin/x", "defer"), ("git branch --sort=-date", "defer"),
     ("git reset -- file", "defer"), ("git reset -- HEAD~1", "defer"), ("git reset abc1234", "defer"), ("git reset --patch", "defer"),
-    ("git reset --merge", "defer"), ("git reset --soft $X", "defer"), ("git reset $(git merge-base a b)", "defer"),
+    ("git reset --merge", "defer"), ("git reset --soft $X", "ask"), ("git reset $(git merge-base a b)", "defer"),
     ("git clean --interactive -f", "defer"), ("git clean -e '*.log' -n", "defer"), ("git clean -e x -fd", "deny"), ("git clean -n $X", "defer"),
     ("git checkout -b new .", "defer"), ("git checkout --patch .", "defer"), ("git checkout --conflict=merge file", "defer"), ("git checkout -B x", "defer"),
     ("git switch -c n", "defer"), ("git switch --create n", "defer"), ("git restore --patch .", "defer"), ("git restore --worktree file", "defer"),
