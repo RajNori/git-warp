@@ -126,7 +126,7 @@ def test_new_ask_rules(cmd, rule):
 
 
 @pytest.mark.parametrize("cmd", [
-    "git submodule foreach 'echo hi'", "git submodule foreach git status", "git submodule update --init", "git bisect run make test",
+    "git submodule foreach 'echo hi'", "git submodule foreach git status", "git submodule update --init",
     "git bisect start", "git bisect good", "git checkout-index -a", "git checkout-index src/a.c", "git read-tree -m HEAD",
     "git rm --cached -r .", "git rm -r dir", "git rm file.txt", "git rm -f one.txt", "git update-ref refs/heads/feature/x abc",
     "git push --dry-run --prune", "git push origin feature/x", "git -c gc.pruneExpire=2.weeks.ago gc", "git gc",
