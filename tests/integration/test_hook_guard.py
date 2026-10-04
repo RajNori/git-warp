@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from tests.conftest import ROOT, SCRIPTS
+from tests.conftest import PLUGIN, SCRIPTS
 
 HOOK = SCRIPTS / "hook_git_guard.py"
 
@@ -211,7 +211,7 @@ def test_internal_error_in_git_lookup_degrades_not_crashes(monkeypatch, capsys, 
 
 
 def test_hooks_json_wires_the_guard_for_bash():
-    cfg = json.loads((ROOT / "hooks" / "hooks.json").read_text())
+    cfg = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())
     pre = cfg["hooks"]["PreToolUse"]
     assert any(e.get("matcher") == "Bash" and "hook_git_guard.py" in h["command"] for e in pre for h in e["hooks"])
 

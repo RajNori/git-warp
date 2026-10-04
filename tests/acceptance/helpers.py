@@ -23,7 +23,8 @@ from pathlib import Path
 from typing import Optional
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "scripts"
+PLUGIN = ROOT / "plugin"
+SCRIPTS = PLUGIN / "scripts"
 WARP = SCRIPTS / "warp.py"
 REAL_GIT = shutil.which("git") or "/usr/bin/git"
 GIT_STATE_DIRNAME = "git-warp"
@@ -270,7 +271,7 @@ def guard_decision(command: str, cwd, env=None) -> tuple:
 
 def hook_timeouts() -> dict:
     """script-name -> timeout (seconds) as declared in hooks/hooks.json."""
-    cfg = json.loads((ROOT / "hooks" / "hooks.json").read_text())
+    cfg = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())
     out = {}
     for groups in cfg["hooks"].values():
         for g in groups:

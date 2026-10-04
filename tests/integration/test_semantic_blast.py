@@ -10,7 +10,8 @@ from gitwarp.semantic.adapters import JsAdapter, PythonAdapter
 from gitwarp.semantic.adapters import generic
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-WARP = str(ROOT / "scripts" / "warp.py")
+PLUGIN = ROOT / "plugin"
+WARP = str(PLUGIN / "scripts" / "warp.py")
 
 
 def warp(*args):

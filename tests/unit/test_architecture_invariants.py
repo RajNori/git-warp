@@ -5,7 +5,8 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "scripts"
+PLUGIN = ROOT / "plugin"
+SCRIPTS = PLUGIN / "scripts"
 CORE_GIT = SCRIPTS / "gitwarp" / "core" / "git.py"
 
 
@@ -43,13 +44,13 @@ def test_no_dangerous_calls_in_production_code():
 
 
 def test_hooks_json_points_at_existing_scripts():
-    data = json.loads((ROOT / "hooks" / "hooks.json").read_text())
+    data = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())
     cmds = [h["command"] for ev in data["hooks"].values() for entry in ev for h in entry["hooks"]]
     assert cmds
     for c in cmds:
         m = re.search(r"\$\{CLAUDE_PLUGIN_ROOT\}/(\S+?)\"?$", c)
         assert m, c
-        assert (ROOT / m.group(1)).is_file(), c
+        assert (PLUGIN / m.group(1)).is_file(), c
 
 
 def test_obsolete_scaffold_scripts_are_gone():

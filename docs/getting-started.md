@@ -20,10 +20,10 @@ Git Warp is not on any marketplace yet (see [marketplace.md](marketplace.md)). L
 ```bash
 git clone https://github.com/RajNori/git-warp.git
 cd your-project
-claude --plugin-dir /path/to/git-warp
+claude --plugin-dir /path/to/git-warp/plugin
 ```
 
-Optional manifest check: `claude plugin validate /path/to/git-warp`.
+Optional manifest check: `claude plugin validate /path/to/git-warp/plugin`.
 
 In a headless session the skills were listed as `git-warp:git-xray`, `git-warp:git-rescue`, and so on
 (namespaced `plugin:skill`). Whether `/git-xray` also works depends on Claude Code.

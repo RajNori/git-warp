@@ -10,7 +10,8 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SKILL_FILES = sorted((ROOT / "skills").rglob("*.md"))
+PLUGIN = ROOT / "plugin"
+SKILL_FILES = sorted((PLUGIN / "skills").rglob("*.md"))
 ALLOWED = {"${CLAUDE_PLUGIN_ROOT}", "$ARGUMENTS"}
 
 

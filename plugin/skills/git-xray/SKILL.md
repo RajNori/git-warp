@@ -7,7 +7,7 @@ allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py":*), Read, Gr
 
 # Git X-Ray
 
-> Run `warp.py` from the repository directory: `--repo` defaults to the current directory. Do **not** pass `--repo "$PWD"` (or any shell expansion): Claude Code cannot analyse it statically and would prompt even though `warp.py` is pre-approved. If you must name another repository, use a literal absolute path.
+> Run `warp.py` from the repository directory: `--repo` defaults to the current directory. Do **not** pass `--repo` a shell variable or any other shell expansion: Claude Code cannot analyse it statically and would prompt even though `warp.py` is pre-approved. If you must name another repository, use a literal absolute path.
 
 Read-only diagnosis of the current repository. Git Warp gathers deterministic evidence as JSON; you verify and explain it. Never mutate the repository: suggest commands, do not run mutating ones (no add/commit/reset/stash/checkout/rebase/merge/push/clean).
 
