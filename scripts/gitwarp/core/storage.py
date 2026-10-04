@@ -192,10 +192,15 @@ def _open_file(d: _Dir, name: str, flags: int, create: bool = False) -> int:
     if not _HAS_DIRFD or not _O_NOFOLLOW:  # degrade: lstat check then plain open
         _require_regular_or_absent(d, name)
     try:
-        fd = os.open(name if _HAS_DIRFD else str(d.path / name), flags | _O_NOFOLLOW | _O_NONBLOCK | _O_CLOEXEC | (os.O_CREAT if create else 0),
-                     FILE_MODE, **({"dir_fd": d.fd} if _HAS_DIRFD else {}))
-    except FileNotFoundError:
-        raise
+        for attempt in range(8):
+            try:
+                fd = os.open(name if _HAS_DIRFD else str(d.path / name), flags | _O_NOFOLLOW | _O_NONBLOCK | _O_CLOEXEC | (os.O_CREAT if create else 0),
+                             FILE_MODE, **({"dir_fd": d.fd} if _HAS_DIRFD else {}))
+                break
+            except FileNotFoundError:
+                if not create or attempt == 7:      # O_CREAT can transiently report ENOENT while another process creates the file (macOS)
+                    raise
+                time.sleep(0.002 * (attempt + 1))
     except OSError as e:
         st = _lstat(d.fd, name)
         if st is not None and not stat.S_ISREG(st.st_mode):
