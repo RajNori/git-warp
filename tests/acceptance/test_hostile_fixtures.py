@@ -155,10 +155,11 @@ def _clear(fx):
 def _run_ops(fx, ops):
     results = {}
     for name, thunk in ops:
+        before = h.snapshot(fx.repo)     # the snapshot itself runs plain git: its marker firings are not the operation's
         _clear(fx)
-        before = h.snapshot(fx.repo)
         r = thunk()
-        results[name] = {"fired": sorted(fx.fired()), "run": r, "mutated": h.diff(before, h.snapshot(fx.repo))}
+        fired = sorted(fx.fired())       # read BEFORE the after-snapshot for the same reason
+        results[name] = {"fired": fired, "run": r, "mutated": h.diff(before, h.snapshot(fx.repo))}
     return results
 
 
