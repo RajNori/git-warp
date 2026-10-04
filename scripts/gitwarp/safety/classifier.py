@@ -388,6 +388,8 @@ class Opts:
                     ctx.dyn_seen.append((w, bool(self.pos)))      # dynamic word in an option-capable position (values of known options are consumed below)
                 if t.startswith("-") and not w.bare and not seen_dd:
                     self.dyn_flag = True
+            if w.glob and not w.dyn and ctx is not None and not seen_dd and t != "--":
+                ctx.dyn_seen.append((w, bool(self.pos)))    # unquoted glob / brace word: the shell may expand it into an option
             if seen_dd:
                 self.dd.append(t)
                 continue
@@ -592,6 +594,8 @@ def _uncertain_position(w: Word, seen_pos: bool, ctx: "_Ctx") -> bool:
     options (``-m "$MSG"``, ``-F``, ``-t`` ...), anything after a literal ``--``.  Exempt here: a word with a literal
     prefix that cannot start an option / refspec and holds no ``:`` (``feature-$X``, ``refs/heads/$B``, ``HEAD~$N``), a
     variable with a known static value, and a variable assigned only from read-only Git output."""
+    if w.glob and not w.dyn:
+        return w.text[:1] in ("-", "*", "?", "[", "{")     # `-*`, `*`, `{,-f}`, `[-]f` can expand to `-f`; `src/*.py` cannot
     if _risky_word(w, ctx):
         return True
     if w.varexp == 0:
@@ -705,6 +709,8 @@ def _git_invocation(words: List[Word], ctx: _Ctx, sub_override: Optional[str] = 
     opt = _output_file_option(name, rest)
     if opt:
         ctx.add("output-file", tool=name, opt=opt)
+    if name in _GLOB_EXTRA_SUBS and not _read_only_form(name, rest) and _glob_option_word(rest):
+        ctx.add("dynamic-argument")
     xo = _exec_option(name, rest, ctx) if name != "rebase" else None
     if xo:
         ctx.add("exec-option", tool="git " + name, opt=xo)
@@ -851,6 +857,29 @@ def _output_file_option(name: str, rest: List[Word]) -> Optional[str]:
         if name == "grep" and (t.startswith("-O") or _prefix_opt(t, "open-files-in-pager")):
             return "--open-files-in-pager"
     return None
+
+
+_GLOB_EXTRA_SUBS = frozenset("""commit merge cherry-pick revert am apply mv config remote notes replace archive format-patch bundle clone
+init maintenance pull fetch""".split())
+_VALUE_OPTS = frozenset({"-m", "-F", "-C", "-c", "-t", "-S", "-o", "-s", "-X", "--message", "--file", "--template", "--author", "--date"})
+
+
+def _glob_option_word(rest: List[Word]) -> bool:
+    """An unquoted glob/brace word that could expand to an option (starts with ``-``, ``*``, ``?``, ``[``, ``{``) before ``--``,
+    skipping the value of message/file style options."""
+    skip = False
+    for w in rest:
+        if skip:
+            skip = False
+            continue
+        if w.text == "--":
+            return False
+        if not w.dyn and w.text in _VALUE_OPTS:
+            skip = True
+            continue
+        if w.glob and not w.dyn and w.text[:1] in ("-", "*", "?", "[", "{"):
+            return True
+    return False
 
 
 def _read_only_form(name: str, rest: List[Word]) -> bool:
