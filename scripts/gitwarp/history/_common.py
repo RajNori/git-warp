@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from ..core import git
+from ..core import git, revisions
 from ..core.output import emit
 from ..core.redact import redact
 
@@ -69,7 +69,8 @@ def commit_files(sha: str, cwd, limit: int = 500) -> tuple:
 
     Returns ``(files, total)`` with ``files`` capped at ``limit``.
     """
-    r = git.run(["rev-list", "--parents", "-n1", git.check_ref(sha)], cwd=cwd)
+    sha = revisions.sha_of(sha, cwd)
+    r = git.run(["rev-list", "--parents", "-n1", "--end-of-options", sha], cwd=cwd)
     parts = r.text.split() if r.ok else []
     if len(parts) >= 3:
         d = git.run(["diff", "--name-only", "-z", parts[1], sha, "--"], cwd=cwd, timeout=30)
@@ -81,6 +82,7 @@ def commit_files(sha: str, cwd, limit: int = 500) -> tuple:
 
 def refs_containing(sha: str, cwd, max_names: int = 6) -> list:
     """Branches/tags/remotes/stash that contain ``sha`` (empty = unreachable from refs)."""
+    sha = revisions.sha_of(sha, cwd)
     r = git.run(["for-each-ref", "--contains", sha, "--format=%(refname:short)",
                  "refs/heads", "refs/tags", "refs/remotes", "refs/stash"], cwd=cwd, timeout=30)
     names = r.lines if r.ok else []
@@ -88,12 +90,7 @@ def refs_containing(sha: str, cwd, max_names: int = 6) -> list:
 
 
 def is_ancestor(a: str, b: str, cwd) -> Optional[bool]:
-    r = git.run(["merge-base", "--is-ancestor", git.check_ref(a), git.check_ref(b)], cwd=cwd)
-    if r.returncode == 0:
-        return True
-    if r.returncode == 1:
-        return False
-    return None
+    return git.is_ancestor(a, b, cwd)
 
 
 def repo_state(cwd) -> dict:

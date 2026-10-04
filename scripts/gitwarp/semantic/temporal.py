@@ -11,7 +11,7 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
-from ..core import git
+from ..core import git, revisions
 from ..core.config import load_config
 from ..core.redact import redact
 from .common import read_text, repo_state, state_warnings
@@ -156,7 +156,7 @@ class _Ctx:
 
 
 def removed_lines_in_commit(ctx: _Ctx, sha: str, path: Optional[str]) -> list:
-    args = ["-c", "core.quotepath=off", "show", "--no-color", "--format=", "-U0", "--no-ext-diff", sha]
+    args = ["-c", "core.quotepath=off", "show", "--no-color", "--format=", "-U0", "--end-of-options", revisions.sha_of(sha, ctx.root)]
     if path:
         args += ["--", path]
     try:
@@ -398,19 +398,20 @@ def analyze(root: Path, base: Optional[str] = None, limit: int = 20, budget: int
     mode, base_rev = "working-tree", st["head"]
     if base:
         try:
-            git.check_ref(base)
-        except ValueError as e:
-            return {"error": str(e), "warnings": warnings}
-        if git.rev_parse(base, root) is None:
-            return {"error": f"unknown base ref: {base}", "warnings": warnings}
+            base_resolved = revisions.resolve(base, root)
+            head_resolved = revisions.resolve("HEAD", root)
+        except revisions.RevisionError as e:
+            if e.reason in revisions.SYNTAX_REASONS:
+                return {"error": str(e), "reason": e.reason, "warnings": warnings}
+            return {"error": f"unknown base ref: {base}", "reason": e.reason, "warnings": warnings}
         mode = f"base:{base}"
-        base_rev = git.merge_base(base, "HEAD", root)
+        base_rev = git.merge_base(base_resolved, head_resolved, root)
         if base_rev is None:
             warnings.append("no merge base between base and HEAD; comparing against the base ref directly")
-            base_rev = git.rev_parse(base, root)
-        r = git.run(["-c", "core.quotepath=off", "diff", "-U0", "--no-color", "--no-ext-diff", f"{base}...HEAD"], cwd=root, timeout=60)
-        ex = git.run(["rev-list", "--max-count=5000", f"{base}..HEAD"], cwd=root, timeout=20)
-        ctx.exclude = set(ex.lines)
+            base_rev = base_resolved.sha
+        r = git.run(["-c", "core.quotepath=off", "diff", "-U0", "--no-color", f"{base_resolved.sha}...{head_resolved.sha}", "--"], cwd=root, timeout=60)
+        ex = git.rev_list([head_resolved], [base_resolved], max_count=5000, cwd=root, timeout=20)
+        ctx.exclude = set(ex or [])
     else:
         r = git.run(["-c", "core.quotepath=off", "diff", "-U0", "--no-color", "--no-ext-diff", "HEAD"], cwd=root, timeout=60)
     files = parse_diff(r.stdout[:3_000_000]) if r.ok else {}

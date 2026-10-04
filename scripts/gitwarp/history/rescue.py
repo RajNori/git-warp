@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from ..core import git
+from ..core import git, revisions
 from ._common import (brief, clip, commit_files, is_ancestor, is_hexish, refs_containing, repo_state)
 
 REFLOG_HEAD_LIMIT = 400
@@ -52,8 +52,8 @@ def _parse_ts(iso: str) -> int:
 def _read_reflog(ref: str, limit: int, cwd) -> list:
     """Entries newest first: ``{ref, sha, message, ts}`` (ts = when the reflog entry was written)."""
     try:
-        r = git.run(["reflog", "show", "--date=unix", f"-n{int(limit)}", "--format=%H\x1f%gs\x1f%gd", git.check_ref(ref)],
-                    cwd=cwd, timeout=30)
+        r = git.run(["reflog", "show", "--date=unix", f"-n{int(limit)}", "--format=%H\x1f%gs\x1f%gd", "--end-of-options",
+                     revisions.check_refname(ref)], cwd=cwd, timeout=30)
     except (git.GitError, ValueError):
         return []
     out = []
@@ -92,12 +92,12 @@ def _commit_types(shas: list, cwd) -> dict:
 
 def _chain(sha: str, cwd) -> list:
     """Commits reachable from ``sha`` but from no branch/tag/remote/stash (what would be lost)."""
-    r = git.run(["rev-list", f"--max-count={CHAIN_LIMIT}", sha, *_NOT_REFS], cwd=cwd, timeout=30)
+    r = git.run(["rev-list", f"--max-count={CHAIN_LIMIT}", revisions.sha_of(sha, cwd), *_NOT_REFS], cwd=cwd, timeout=30)
     return r.lines if r.ok else []
 
 
 def _chain_matches(sha: str, extra: list, pathspec: Optional[str], cwd) -> bool:
-    args = ["rev-list", "-n1", *extra, sha, *_NOT_REFS]
+    args = ["rev-list", "-n1", *extra, revisions.sha_of(sha, cwd), *_NOT_REFS]
     if pathspec:
         args += ["--", pathspec]
     r = git.run(args, cwd=cwd, timeout=30)
@@ -472,11 +472,12 @@ def scan(cwd, since: Optional[str] = None, grep: Optional[str] = None, path: Opt
 def inspect(cwd, rev: str) -> dict:
     warnings: list = []
     try:
-        sha = git.rev_parse(rev, cwd)
-    except ValueError:
-        return {"error": f"unsafe revision: {rev!r}"}
-    if not sha:
-        return {"error": f"{rev!r} does not resolve to a commit in this repository (it may be a blob/tree, abbreviated ambiguously, or already pruned)"}
+        sha = revisions.resolve(rev, cwd).sha
+    except revisions.RevisionError as e:
+        if e.reason in revisions.SYNTAX_REASONS:
+            return {"error": f"unsafe revision: {rev!r}", "reason": e.reason}
+        return {"error": f"{rev!r} does not resolve to a commit in this repository (it may be a blob/tree, abbreviated ambiguously, or already pruned)",
+                "reason": e.reason}
     meta = git.commit_metadata(sha, cwd)
     state = repo_state(cwd)
     files, total = commit_files(sha, cwd)
@@ -488,9 +489,9 @@ def inspect(cwd, rev: str) -> dict:
         rel["head_is_ancestor_of_commit"] = is_ancestor(head, sha, cwd)
         mb = git.merge_base(sha, head, cwd)
         rel["merge_base"] = mb
-        ab = git.run(["rev-list", "--left-right", "--count", f"HEAD...{sha}"], cwd=cwd)
-        if ab.ok and len(ab.text.split()) == 2:
-            rel["commits_only_in_head"], rel["commits_only_in_candidate"] = (int(x) for x in ab.text.split())
+        ab = git.left_right_count("HEAD", sha, cwd)
+        if ab:
+            rel["commits_only_in_head"], rel["commits_only_in_candidate"] = ab
         only = git.log_commits(f"HEAD..{sha}", limit=10, cwd=cwd)
         rel["candidate_only_commits"] = [{"short": c.short, "subject": clip(c.subject, 100)} for c in only]
         if mb is None:
@@ -539,11 +540,12 @@ def preserve(cwd, rev: str, name: Optional[str] = None, dry_run: bool = False) -
     """Create ``refs/heads/<name>`` pointing at commit ``rev``. Returns ``(payload, exit_code)``."""
     base = {"command": "rescue preserve", "dry_run": dry_run, "principle": PRINCIPLE}
     try:
-        sha = git.rev_parse(rev, cwd)
-    except ValueError:
-        return {**base, "error": f"unsafe revision: {rev!r}"}, 2
-    if not sha:
-        return {**base, "error": f"{rev!r} is not a commit in this repository; refusing to create a branch (objects that are blobs/trees, unknown or ambiguous ids are rejected)"}, 2
+        sha = revisions.resolve(rev, cwd).sha
+    except revisions.RevisionError as e:
+        if e.reason in revisions.SYNTAX_REASONS:
+            return {**base, "error": f"unsafe revision: {rev!r}", "reason": e.reason}, 2
+        return {**base, "error": f"{rev!r} is not a commit in this repository; refusing to create a branch (objects that are blobs/trees, unknown or ambiguous ids are rejected)",
+                "reason": e.reason}, 2
     if name is None:
         name = f"rescue/{datetime.now().strftime('%Y-%m-%d')}-{sha[:8]}"
     bad = validate_branch_name(name)
