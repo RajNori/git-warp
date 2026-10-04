@@ -273,7 +273,10 @@ class Parser:
             if c in _BREAK:
                 break
             if c == "(":
-                if w.buf and w.buf[-1] and w.buf[-1][-1] in "?*+@!":
+                # `?(..) *(..) +(..) @(..) !(..)` extglob, and zsh `-(f|d)`: a "(" glued to a word that has already started is a
+                # pattern, not a subshell.  Keep it as ONE glob word (fail-safe: never classify a truncated prefix).  `f()` stays
+                # a function definition.
+                if w.buf and w.buf[-1] and (w.buf[-1][-1] in "?*+@!" or (not s.startswith("()", i) and not s.startswith("( )", i))):
                     d, j = 0, i
                     while j < n:
                         self.tick()
@@ -317,6 +320,9 @@ class Parser:
                     w.glob = True
                 elif c == "{":
                     w.brace = True
+                elif c in "^#" or (c == "~" and w.buf and not any("=" in b for b in w.buf)
+                                   and not (i + 1 < n and (s[i + 1].isdigit() or s[i + 1] in "{+-"))):
+                    w.glob = True        # zsh/ksh extendedglob operators (`x#`, `^x`, `a~b`): the shell may treat the word as a pattern
                 w.add(c)
                 i += 1
         return w.word(), i
@@ -430,7 +436,9 @@ class Parser:
                     mode, i, heredoc_strip = "heredoc", i + 2, False
                 elif s.startswith(">>", i) or s.startswith(">|", i) or s.startswith(">&", i):
                     mode, i = "out", i + 2
-                elif s.startswith("<&", i) or s.startswith("<>", i):
+                elif s.startswith("<>", i):
+                    mode, i = "out", i + 2          # `<>` opens read-write and creates the file
+                elif s.startswith("<&", i):
                     mode, i = "skip", i + 2
                 elif c == ">":
                     mode, i = "out", i + 1

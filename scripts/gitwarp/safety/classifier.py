@@ -387,6 +387,7 @@ class Opts:
 
     def __init__(self, words: List[Word], short_arg=frozenset(), long_arg=frozenset(), ctx: "Optional[_Ctx]" = None):
         self.shorts: set = set()
+        self.shorts_lit: set = set()    # short flags spelled in words that are NOT shell patterns (a glob may match nothing / something else)
         self.short_vals: dict = {}
         self.longs: dict = {}
         self.pos: List[str] = []
@@ -429,6 +430,8 @@ class Opts:
             elif t.startswith("-") and len(t) > 1 and not w.dyn:
                 for k, ch in enumerate(t[1:]):
                     self.shorts.add(ch)
+                    if not w.glob:
+                        self.shorts_lit.add(ch)
                     if ch in short_arg:
                         rest = t[2 + k:]
                         if rest:
@@ -869,7 +872,20 @@ def _exec_option(name: str, rest: List[Word], ctx: "_Ctx") -> Optional[str]:
 
 _ENV_ANY_VALUE = frozenset("""GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
 GIT_TERMINAL_PROMPT GIT_OPTIONAL_LOCKS GIT_MERGE_AUTOEDIT GIT_CONFIG_NOSYSTEM GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM
-GIT_CONFIG_COUNT GIT_LITERAL_PATHSPECS GIT_NOGLOB_PATHSPECS""".split())
+GIT_CONFIG_COUNT GIT_LITERAL_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_GLOB_PATHSPECS GIT_ICASE_PATHSPECS GIT_ATTR_NOSYSTEM
+GIT_NO_REPLACE_OBJECTS GIT_ADVICE GIT_FLUSH GIT_PROGRESS_DELAY GIT_PRINT_SHA1_ELLIPSIS GIT_MERGE_VERBOSITY GIT_REFLOG_ACTION
+GIT_NO_LAZY_FETCH GIT_TRACE_CURL_NO_DATA GIT_TRACE_REDACT""".split())
+# Review of every variable in `git help git` (Git 2.53).  INCLUDED = cannot run a program or redirect the repository:
+#   identity (AUTHOR_*/COMMITTER_*), behaviour toggles (TERMINAL_PROMPT, OPTIONAL_LOCKS, MERGE_AUTOEDIT, ADVICE, FLUSH, NO_LAZY_FETCH,
+#   NO_REPLACE_OBJECTS, ATTR_NOSYSTEM), pathspec-matching modes (LITERAL/GLOB/NOGLOB/ICASE_PATHSPECS), display-only (PRINT_SHA1_ELLIPSIS,
+#   PROGRESS_DELAY, MERGE_VERBOSITY, TRACE_CURL_NO_DATA, TRACE_REDACT), message text (REFLOG_ACTION), discovery limits (CEILING_DIRECTORIES,
+#   DISCOVERY_ACROSS_FILESYSTEM), GIT_DIFF_OPTS only as --unified=N / -uN / -UN (see _DIFF_OPTS_OK).
+# EXCLUDED (default-ASK): everything that names a program or path (EXTERNAL_DIFF, SSH*, ASKPASS, PROXY_COMMAND, EDITOR/PAGER with real values,
+#   EXEC_PATH, TEMPLATE_DIR, CONFIG_PARAMETERS, CONFIG_GLOBAL/SYSTEM paths, TRACE* paths, ALLOW_PROTOCOL, PROTOCOL_FROM_USER, ATTR_SOURCE),
+#   anything that redirects the repository (DIR, WORK_TREE, INDEX_FILE, OBJECT_DIRECTORY, ALTERNATE_OBJECT_DIRECTORIES, NAMESPACE,
+#   COMMON_DIR), anything that weakens integrity or security (SSL_NO_VERIFY, REF_PARANOIA, COMMIT_GRAPH_PARANOIA), and variables whose effect is
+#   not obviously inert (INDEX_VERSION, DEFAULT_HASH, DEFAULT_REF_FORMAT, SSH_VARIANT, REDIRECT_STDIN, DIFF_PATH_*, EXTERNAL_DIFF_TRUST_EXIT_CODE).
+_DIFF_OPTS_OK = re.compile(r"^(--unified=\d{1,4}|-[uU]\d{1,4})$")
 _ENV_SAFE_VALUES = {"GIT_PAGER": _SAFE_ENV_VALUES, "GIT_EDITOR": _SAFE_ENV_VALUES, "GIT_SEQUENCE_EDITOR": _SAFE_ENV_VALUES,
                     "PAGER": _SAFE_ENV_VALUES, "EDITOR": _SAFE_ENV_VALUES, "VISUAL": _SAFE_ENV_VALUES, "BROWSER": _SAFE_ENV_VALUES}
 _ENV_NON_GIT_EXEC = frozenset("""SSH_ASKPASS ASKPASS LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH PAGER EDITOR
@@ -893,6 +909,9 @@ def _env_exec(name: str, value: str, ctx: "_Ctx") -> None:
             ctx.exec_env.add(n)
     elif n.startswith("GIT_CONFIG_VALUE_") or n in _ENV_ANY_VALUE:
         pass
+    elif n == "GIT_DIFF_OPTS":
+        if dyn or not _DIFF_OPTS_OK.match(v):
+            ctx.exec_env.add(n)
     elif n in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"):
         if v != "/dev/null":
             ctx.exec_env.add(n)
@@ -1017,8 +1036,8 @@ def _h_reset(rest, ctx, cands):
 
 def _h_clean(rest, ctx, cands):
     o = Opts(rest, ctx=ctx, short_arg={"e"}, long_arg={"exclude"})
-    dry = "n" in o.shorts or o.lopt("dry-run", 2)
-    interactive = "i" in o.shorts or o.lopt("interactive", 3)
+    dry = "n" in o.shorts_lit or o.lopt("dry-run", 2)
+    interactive = "i" in o.shorts_lit or o.lopt("interactive", 3)
     if dry or interactive:
         ctx.settled = True               # -n / -i win over any force flag, whatever its position or origin
         return
@@ -1128,7 +1147,7 @@ def _h_push(rest, ctx, cands):
     delete = "d" in o.shorts or o.lopt("delete", 3)
     all_ = o.lopt("all", 3) or "branches" in o.longs
     refspecs = o.all_pos[1:]
-    if "n" in o.shorts or o.lopt("dry-run", 3):
+    if "n" in o.shorts_lit or o.lopt("dry-run", 3):
         ctx.settled = True
         return  # nothing is sent
     if o.lopt("prune", 3):
@@ -1294,19 +1313,57 @@ def _h_submodule(rest, ctx, cands):
                     ctx.add("shell-git")
             else:
                 _run_string(" ".join(w.text for w in cmd_words), ctx)
-            _runs_program(cmd_words, "git submodule foreach", ctx)
+            _runs_program(cmd_words, "git submodule foreach", ctx, text=" ".join(w.text for w in cmd_words) if not any(w.dyn for w in cmd_words) else None)
         return
     if o.pos and o.pos[0] == "deinit" and ("f" in o.shorts or o.lopt("force", 3)):
         ctx.add("submodule-deinit-force")
 
 
-def _runs_program(words: List[Word], tool: str, ctx: _Ctx) -> None:
+# Commands a Git runner (`bisect run`, `submodule foreach`) may execute without asking: ONLY tools with no file-system side
+# effects.  Each is justified: echo/printf/true/false/:/test/[/[[ print or exit; cat/head/tail/ls/pwd/wc/stat/file/diff/cmp/grep
+# (and egrep/fgrep) only read; date/sleep/basename/dirname/which/type compute text.  Deliberately EXCLUDED because they write,
+# execute or fetch: cp mv rm touch tee sed (-i) awk (system) dd install ln chmod chown mkdir rmdir curl wget make scripts sh/bash
+# sort (-o) uniq (second operand is an output file) find (-delete/-exec) xargs env nohup ...  `git` is allowed only in read-only forms.
+RUNNER_SAFE = frozenset("""echo printf true false : test [ [[ cat head tail ls pwd wc stat file diff cmp grep egrep fgrep date sleep
+basename dirname which type""".split())
+_FD_TARGET = re.compile(r"^(\d+|-|/dev/null|&\d+)$")
+
+
+def _runner_cmds_safe(cmds: List[Cmd]) -> bool:
+    """Every command (pipeline members, ``;``/``&&``/``||`` parts, substitutions) is read-only and nothing is redirected to a file."""
+    for c in cmds:
+        if not c.words:
+            continue
+        if any(not _FD_TARGET.match(t) for t in c.redirs):
+            return False
+        head = c.words[0]
+        if head.dyn:
+            return False
+        name = posixpath.basename(head.text)
+        if name == "git":
+            if not _benign_cmds([c]):            # read-only subcommand (or branch --list), no --output
+                return False
+        elif name not in RUNNER_SAFE:
+            return False
+        for w in c.words[1:]:
+            if w.subs and not all(_runner_cmds_safe(sc) for sc in w.subs):
+                return False
+    return True
+
+
+def _runs_program(words: List[Word], tool: str, ctx: _Ctx, text: Optional[str] = None) -> None:
     """``bisect run CMD`` / ``submodule foreach CMD``: Git executes CMD itself, so a pre-approved ``git ...:*`` rule would
-    cover an arbitrary program.  Git and plain text tools are analysed elsewhere; anything else asks."""
+    cover an arbitrary program.  Only read-only commands (RUNNER_SAFE, read-only git) are exempt; redirections, pipes or
+    ``;``/``&&`` into anything else, substitutions and every other program ask.  Destructive git inside is analysed elsewhere."""
     head = words[0]
     first = head.text.split()[0] if head.text.split() else ""
-    base = posixpath.basename(first)
-    if head.dyn or not (base == "git" or base in _TEXT_TOOLS):
+    safe = False
+    try:
+        cmds = parse_script(text, ctx.budget, ctx.depth + 1) if text is not None else [Cmd(words=list(words))]
+        safe = not head.dyn and _runner_cmds_safe(cmds)
+    except ShellParseError:
+        safe = False
+    if not safe:
         ctx.add("exec-option", tool=tool, opt=f"runs `{first[:40] or '?'}` for every revision / submodule")
 
 
