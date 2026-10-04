@@ -47,9 +47,9 @@ crash Claude Code; the guard errs toward `ask` when it fails on a command that m
 You can run everything the skills run, yourself. Use a scratch repository first if you like:
 
 ```bash
-python3 /path/to/git-warp/scripts/warp.py xray --repo /path/to/repo
-python3 /path/to/git-warp/scripts/warp.py guard check "git reset --hard HEAD~1"
-python3 /path/to/git-warp/scripts/warp.py memory hotspots --repo /path/to/repo
+python3 /path/to/git-warp/plugin/scripts/warp.py xray --repo /path/to/repo
+python3 /path/to/git-warp/plugin/scripts/warp.py guard check "git reset --hard HEAD~1"
+python3 /path/to/git-warp/plugin/scripts/warp.py memory hotspots --repo /path/to/repo
 ```
 
 Output is JSON on stdout. Errors are JSON too (`{"error": ...}`) with a non-zero exit code. Every command takes
