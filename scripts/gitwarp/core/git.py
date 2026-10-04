@@ -152,11 +152,13 @@ def common_dir(cwd: Optional[PathLike] = None) -> Path:
 
 
 def state_dir(cwd: Optional[PathLike] = None, create: bool = False) -> Path:
-    """``<common git dir>/git-warp`` — the only place Git Warp writes state."""
-    d = common_dir(cwd) / "git-warp"
-    if create:
-        d.mkdir(parents=True, exist_ok=True)
-    return d
+    """``<common git dir>/git-warp`` — the only place Git Warp writes state.
+
+    Path resolution only: how the directory is created, checked and protected is owned by
+    :mod:`gitwarp.core.storage` (the single secure-storage abstraction).
+    """
+    from . import storage
+    return storage.state_dir(common_dir(cwd), create=create)
 
 
 def is_shallow(cwd: Optional[PathLike] = None) -> bool:
