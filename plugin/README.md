@@ -457,6 +457,22 @@ Short version (full list in [docs/troubleshooting.md](https://github.com/RajNori
 
 Project history and verification evidence: [CHANGELOG.md](https://github.com/RajNori/git-warp/blob/main/CHANGELOG.md), [planning/](https://github.com/RajNori/git-warp/tree/main/planning).
 
+## For reviewers
+
+Notes for the plugin directory review, covering what the automated scan flags:
+
+- **No network access.** Git Warp makes no network calls. The only external process it runs is local `git` (through
+  one wrapper in `scripts/gitwarp/core/git.py`), and it never runs `fetch`, `pull`, `push`, `clone` or `ls-remote`.
+- **No credentials read.** It reads no tokens, API keys, passwords, credential helpers or `.netrc`. Before every `git`
+  call, the environment is scrubbed: all `GIT_*` variables and other risky variables are dropped.
+- **Shell patterns are detection rules, not commands it runs.** The guard classifies Bash commands before Claude runs
+  them. Text such as `bash -c`, `eval`, `<( )`, `python3 -c` and piping downloads into a shell appears in its rules,
+  docstrings and this README because those are the patterns it inspects, asks about or blocks. None of it is executed.
+- **Hooks** run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hook_*.py"`: literal paths inside the plugin, standard library
+  only, with no package installs, `npx` or `uvx`.
+- **Local storage only.** State is written under the repository's own `.git/git-warp/` with owner-only permissions,
+  and secrets are redacted before anything is stored (see [What is stored and where](#what-is-stored-and-where)).
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
