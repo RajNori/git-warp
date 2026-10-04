@@ -283,7 +283,9 @@ Claude Code's ordinary permission rules decide, and a `deny`/`ask` is never over
 | ask | `git push --delete <non-protected>` | `push-delete` |
 | deny | `git fetch --force origin main:main`, `git fetch origin +refs/heads/*:refs/heads/*` (forced fetch into a protected local branch) | `fetch-force-protected` |
 | ask | forced fetch into another local branch; `git pull --force` / `-f` | `fetch-force-local` |
-| ask | `git reset $(echo --hard)`, ``git reset `echo --hard` ``, `git clean $(echo -fdx)`: a dynamic word in an option, subcommand or executable position of a destructive-capable subcommand | `dynamic-argument` |
+| ask | `git reset $(echo --hard)`, ``git reset `echo --hard` ``, `git clean $(echo -fdx)`, `git push origin "$BRANCH"`, `git push $FLAGS origin main`: a dynamic word or an unresolved variable in a destructive-capable subcommand (its value may be an option, a forced refspec or a deletion refspec) | `dynamic-argument` |
+| ask | `git diff --ext-diff`, `git fetch --upload-pack=...`, `git push --receive-pack=...`, `GIT_EXTERNAL_DIFF=... git diff`, `git difftool`: an option, subcommand or environment assignment that runs a helper program | `exec-option` |
+| ask | `git diff --output=FILE`, `git log --output`, `git format-patch -o`, `git archive -o`: a file-writing option; `git -c core.pager=... log`: program-running config | `output-file`, `config-exec` |
 | ask | `echo 'git reset --hard' > gen.sh && bash gen.sh` (a script written and run in one command) | `generated-script` |
 | ask | `bash <(echo '...')` | `stdin-script` |
 | ask | `git x`, `git nuke`, `git st`: a first word that is not a known Git subcommand may be a configured alias | `unknown-subcommand` |
