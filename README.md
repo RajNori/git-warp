@@ -390,7 +390,7 @@ destructive operation. Details: [docs/architecture.md](docs/architecture.md) and
 python3 -m pytest tests -q
 ```
 
-`pytest` is not bundled; install it yourself. Result at release: @@TEST_COUNT@@. The suite includes unit,
+`pytest` is not bundled; install it yourself. Result at release: **3109 passed** (the Phoenix baseline was 1345; no baseline test was skipped or loosened, see [planning/BASELINE_TEST_AUDIT.md](planning/BASELINE_TEST_AUDIT.md)). The suite includes unit,
 integration (real temporary repositories and the hook scripts through subprocess), security (guard bypass attempts and
 hostile-repository / hostile-environment contracts), acceptance (a repository-state matrix, recovery fixtures and a
 Guardian corpus), crash/concurrency and scale tests. `tests/live/live_acceptance.py` is an opt-in runner that drives
