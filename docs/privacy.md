@@ -14,6 +14,7 @@ stored, what is redacted, how long it is kept, and how to turn it off or delete 
 | `flight-recorder.jsonl` | `PostToolUse` and `SessionStart` hooks | Redacted metadata about tool calls, one JSON object per line |
 | `flight-recorder.jsonl.1` | rotation | The one previous generation, created when the file would exceed 5 MiB |
 | `warp.db.lock` | `memory` commands | Empty lock file that serialises first-time database creation and schema setup across processes |
+| `state.json.lock` | hooks | Empty lock file that serialises `state.json` updates between concurrent hooks |
 | `warp.db.corrupt`, `.corrupt.1`, `.corrupt.2` | corruption handling | A database that is *definitively* corrupt is moved aside (never deleted) before a fresh one is built; three generations are kept, the one beyond that is dropped |
 | `warp.db` | `memory` commands, `temporal`, `SessionStart` auto-index | SQLite index of Git history plus session rows |
 | `state.json` | recorder and hooks | Bookkeeping: last compaction time, last session id, last Stop-report hash, auto-index back-off timestamp, schema number |
