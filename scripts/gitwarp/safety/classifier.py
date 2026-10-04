@@ -387,6 +387,7 @@ class Opts:
 
     def __init__(self, words: List[Word], short_arg=frozenset(), long_arg=frozenset(), ctx: "Optional[_Ctx]" = None):
         self.shorts: set = set()
+        self.shorts_lit: set = set()    # short flags spelled in words that are NOT shell patterns (a glob may match nothing / something else)
         self.short_vals: dict = {}
         self.longs: dict = {}
         self.pos: List[str] = []
@@ -429,6 +430,8 @@ class Opts:
             elif t.startswith("-") and len(t) > 1 and not w.dyn:
                 for k, ch in enumerate(t[1:]):
                     self.shorts.add(ch)
+                    if not w.glob:
+                        self.shorts_lit.add(ch)
                     if ch in short_arg:
                         rest = t[2 + k:]
                         if rest:
@@ -1017,8 +1020,8 @@ def _h_reset(rest, ctx, cands):
 
 def _h_clean(rest, ctx, cands):
     o = Opts(rest, ctx=ctx, short_arg={"e"}, long_arg={"exclude"})
-    dry = "n" in o.shorts or o.lopt("dry-run", 2)
-    interactive = "i" in o.shorts or o.lopt("interactive", 3)
+    dry = "n" in o.shorts_lit or o.lopt("dry-run", 2)
+    interactive = "i" in o.shorts_lit or o.lopt("interactive", 3)
     if dry or interactive:
         ctx.settled = True               # -n / -i win over any force flag, whatever its position or origin
         return
@@ -1128,7 +1131,7 @@ def _h_push(rest, ctx, cands):
     delete = "d" in o.shorts or o.lopt("delete", 3)
     all_ = o.lopt("all", 3) or "branches" in o.longs
     refspecs = o.all_pos[1:]
-    if "n" in o.shorts or o.lopt("dry-run", 3):
+    if "n" in o.shorts_lit or o.lopt("dry-run", 3):
         ctx.settled = True
         return  # nothing is sent
     if o.lopt("prune", 3):
