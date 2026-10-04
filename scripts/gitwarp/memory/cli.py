@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from ..core import git
+from ..core import git, storage
 from ..core.config import load_config
 from ..core.output import emit
 from . import index, recorder, state
@@ -98,19 +98,20 @@ def main(argv=None) -> int:
                 warnings.append("flight recorder is disabled (recorder_enabled: false)")
         elif sub == "forget":
             sd = git.state_dir(cwd)
-            targets = [sd / n for n in (index.DB_NAME, index.DB_NAME + "-wal", index.DB_NAME + "-shm", index.DB_NAME + "-journal",
-                                        index.DB_NAME + ".corrupt", recorder.RECORDER_FILE, recorder.RECORDER_FILE + ".1")]
-            existing = [t for t in targets if t.exists()]
+            try:
+                names = sorted(n for n in os.listdir(sd) if n.startswith((index.DB_NAME, recorder.RECORDER_FILE)))
+            except OSError:
+                names = []
             if not args.yes:
-                emit({"error": "refusing to delete without --yes", "would_delete": [str(t) for t in existing], "state_dir": str(sd)})
+                emit({"error": "refusing to delete without --yes", "would_delete": [str(sd / n) for n in names], "state_dir": str(sd)})
                 return 2
             deleted = []
-            for t in existing:
+            for n in names:
                 try:
-                    t.unlink()
-                    deleted.append(str(t))
+                    if storage.unlink_regular(sd, n):    # regular files only: symlinks/FIFOs/dirs are refused, never followed
+                        deleted.append(str(sd / n))
                 except OSError as e:
-                    warnings.append(f"could not delete {t.name}: {e}")
+                    warnings.append(f"could not delete {n}: {e}")
             index._MEM.clear()
             out["deleted"] = deleted
             out["kept"] = "state.json and everything else outside warp.db / flight-recorder.jsonl"

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import os
 import re
 import sqlite3
 import time
@@ -30,9 +31,10 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from ..core import git
+from ..core import git, storage
 from ..core.config import Config, load_config
 from ..core.paths import classify_path
+from ..core.redact import redact
 from . import schema
 
 DB_NAME = "warp.db"
@@ -72,6 +74,11 @@ def db_path(cwd, create: bool = False) -> Path:
 
 def _connect(target: str) -> WarpConnection:
     conn = sqlite3.connect(target, timeout=5.0, isolation_level=None, factory=WarpConnection)
+    if target != ":memory:":
+        try:
+            conn.execute("PRAGMA secure_delete = ON")  # rebuilds must not leave old (possibly sensitive) text in free pages
+        except sqlite3.Error:
+            pass
     conn.warnings = []
     conn.persisted = target != ":memory:"
     conn.path = target
@@ -79,23 +86,18 @@ def _connect(target: str) -> WarpConnection:
 
 
 def _quarantine(path: Path) -> Optional[str]:
-    """Move an unusable db aside (single backup slot) and clear sqlite sidecars."""
-    dest = path.with_name(path.name + ".corrupt")
+    """Move an unusable db (and sidecars) aside via core/storage: private, bounded generations, never deleted.
+
+    Returns the quarantine file name, or None when nothing could be moved (an unsafe target is left untouched).
+    """
     try:
-        if dest.exists():
-            dest.unlink()
-        path.replace(dest)
-        for suffix in ("-wal", "-shm", "-journal"):
-            side = path.with_name(path.name + suffix)
-            if side.exists():
-                side.unlink()
-        return str(dest)
+        return storage.quarantine(path.parent, path.name)
     except OSError:
-        try:
-            path.unlink()
-            return None
-        except OSError:
-            return None
+        return None
+
+
+def _redacted_or_same(text):
+    return redact(text) if isinstance(text, str) and text else text
 
 
 def open_db(cwd) -> WarpConnection:
@@ -106,10 +108,11 @@ def open_db(cwd) -> WarpConnection:
     warnings: list = []
     try:
         path = db_path(cwd, create=True)
+        storage.prepare_file(path.parent, DB_NAME)   # private 0600 file, symlink/FIFO/socket/dir refused, BEFORE sqlite opens it
     except git.GitError:
         raise
     except OSError as e:
-        return _memory_db(str(cwd), [f"state directory not writable ({e}); index kept in memory for this run only"])
+        return _memory_db(str(cwd), [f"state storage refused or not writable ({e}); index kept in memory for this run only"])
     key = str(path)
     for attempt in (1, 2):
         conn = None
@@ -117,6 +120,7 @@ def open_db(cwd) -> WarpConnection:
             conn = _connect(key)
             conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
             schema.migrate(conn)
+            storage.tighten_sidecars(path.parent, DB_NAME)
             conn.warnings = warnings
             return conn
         except (sqlite3.DatabaseError, schema.IncompatibleSchema) as e:
@@ -127,7 +131,9 @@ def open_db(cwd) -> WarpConnection:
             if attempt == 2:
                 return _memory_db(key, warnings + [f"warp.db unusable ({e}); index kept in memory for this run only"])
             moved = _quarantine(path)
-            warnings.append(f"warp.db was unreadable or incompatible ({e}); rebuilding" + (f" (old file kept as {Path(moved).name})" if moved else ""))
+            if moved is None:
+                return _memory_db(key, warnings + [f"warp.db unusable ({e}) and could not be quarantined; index kept in memory for this run only"])
+            warnings.append(f"warp.db was unreadable or incompatible ({e}); rebuilding" + f" (old file kept as {Path(moved).name})")
     return _memory_db(key, warnings)  # pragma: no cover
 
 
@@ -245,8 +251,9 @@ def _ingest(conn, cwd, revs: list, limit: Optional[int], deadline: float) -> int
     def fid(path: str) -> int:
         i = file_ids.get(path)
         if i is None:
-            conn.execute("INSERT OR IGNORE INTO files(path) VALUES (?)", (path,))
-            i = conn.execute("SELECT id FROM files WHERE path = ?", (path,)).fetchone()[0]
+            red = redact(path)
+            conn.execute("INSERT OR IGNORE INTO files(path) VALUES (?)", (red,))
+            i = conn.execute("SELECT id FROM files WHERE path = ?", (red,)).fetchone()[0]
             file_ids[path] = i
         return i
 
@@ -270,15 +277,15 @@ def _ingest(conn, cwd, revs: list, limit: Optional[int], deadline: float) -> int
             cur = conn.execute(
                 "INSERT OR IGNORE INTO commits(sha, parents, author_name, author_email, author_date, commit_date, commit_ts, subject, is_merge, is_revert, reverts_sha)"
                 " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (c["sha"], c["parents"], c["author_name"], c["author_email"], c["author_date"], c["commit_date"], c["commit_ts"],
-                 c["subject"], c["is_merge"], c["is_revert"], c["reverts_sha"]),
+                (c["sha"], c["parents"], redact(c["author_name"]), c["author_email"], c["author_date"], c["commit_date"], c["commit_ts"],
+                 redact(c["subject"]), c["is_merge"], c["is_revert"], c["reverts_sha"]),
             )
             if cur.rowcount != 1:
                 continue
             total += 1
             rows, live = [], []
             for path, (a, d, st, old) in c["files"].items():
-                rows.append((c["sha"], fid(path), a, d, st, old))
+                rows.append((c["sha"], fid(path), a, d, st, redact(old) if old else old))
                 live.append(fid(path))
                 if old:  # rename/copy source: marker row (no churn) so the old path is known to be gone
                     if st == "R":
@@ -316,7 +323,7 @@ def _refresh_refs(conn, cwd) -> None:
     rows = []
     for ln in r.lines if r.ok else []:
         name, _, sha = ln.partition("\x1f")
-        rows.append((name, sha, now))
+        rows.append((redact(name), sha, now))
     conn.execute("DELETE FROM refs")
     conn.executemany("INSERT OR REPLACE INTO refs(name, sha, updated) VALUES (?,?,?)", rows)
 
@@ -463,9 +470,13 @@ def index_status(cwd) -> dict:
         path = db_path(cwd, create=False)
     except git.GitError as e:
         return {"exists": False, "error": str(e)}
-    if not path.exists():
-        return {"exists": False, "db": str(path)}
-    out: dict = {"exists": True, "db": str(path), "size_bytes": path.stat().st_size}
+    try:
+        if storage.regular_file(path.parent, DB_NAME) is None:
+            return {"exists": False, "db": str(path)}
+        size = os.stat(path, follow_symlinks=False).st_size
+    except OSError as e:
+        return {"exists": False, "db": str(path), "error": f"state storage refused: {e}"}
+    out: dict = {"exists": True, "db": str(path), "size_bytes": size}
     try:
         conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2.0)
         try:
@@ -495,7 +506,7 @@ def _cfg(cwd) -> Config:
 
 
 def _file_id(conn, path: str) -> Optional[int]:
-    row = conn.execute("SELECT id FROM files WHERE path = ?", (path,)).fetchone()
+    row = conn.execute("SELECT id FROM files WHERE path = ?", (redact(path),)).fetchone()
     return row[0] if row else None
 
 
@@ -716,8 +727,8 @@ def record_session(cwd, session_id: str, branch: Optional[str], head: Optional[s
         conn = open_db(cwd)
         if not conn.persisted:
             return False
-        conn.execute("INSERT OR IGNORE INTO sessions(session_id, started, branch, head) VALUES (?,?,?,?)", (str(session_id)[:128], _now_iso(), branch, head))
-        conn.execute("INSERT INTO events(ts, session_id, kind, detail) VALUES (?,?,?,?)", (_now_iso(), str(session_id)[:128], "session_start", branch or "detached"))
+        conn.execute("INSERT OR IGNORE INTO sessions(session_id, started, branch, head) VALUES (?,?,?,?)", (redact(str(session_id)[:128]), _now_iso(), _redacted_or_same(branch), head))
+        conn.execute("INSERT INTO events(ts, session_id, kind, detail) VALUES (?,?,?,?)", (_now_iso(), redact(str(session_id)[:128]), "session_start", _redacted_or_same(branch) or "detached"))
         conn.close()
         return True
     except (sqlite3.Error, git.GitError, OSError):
@@ -727,7 +738,7 @@ def record_session(cwd, session_id: str, branch: Optional[str], head: Optional[s
 def list_sessions(cwd, limit: int = 20) -> list:
     try:
         path = db_path(cwd, create=False)
-        if not path.exists():
+        if storage.regular_file(path.parent, DB_NAME) is None:
             return []
         conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2.0)
         try:
@@ -735,5 +746,5 @@ def list_sessions(cwd, limit: int = 20) -> list:
                     for s, st, b, h in conn.execute("SELECT session_id, started, branch, head FROM sessions ORDER BY started DESC LIMIT ?", (int(limit),))]
         finally:
             conn.close()
-    except (sqlite3.Error, git.GitError):
+    except (sqlite3.Error, git.GitError, OSError):
         return []
