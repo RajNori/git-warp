@@ -8,7 +8,7 @@ to Git.
 Pipeline for :func:`resolve`::
 
     syntax check      reject non-str, empty, over-long, NUL / newline / any control character or space,
-                      a leading ``-`` (option shaped), a leading ``:`` (``:/regex`` search / index syntax),
+                      a leading ``-`` (option shaped), any ``:`` (``rev:path``, ``:/regex`` search, index stages),
                       ranges (``..``) and glob/escape characters
     git rev-parse     ``rev-parse --verify --quiet --end-of-options <input>^{<kind>}``  (kind = commit by default;
                       the object type the caller expects is *required*, annotated tags are peeled)
@@ -99,8 +99,8 @@ def check_syntax(label: object) -> str:
         raise RevisionError("control_characters", label, "revision contains control characters or whitespace")
     if label.startswith("-"):
         raise RevisionError("option_shaped", label, "revision must not start with '-' (option-shaped input)")
-    if label.startswith(":"):
-        raise RevisionError("unsupported_syntax", label, "revision must not start with ':' (index / message-search syntax)")
+    if ":" in label:
+        raise RevisionError("unsupported_syntax", label, "':' syntax (rev:path, :/message, :N:path) is not supported in a revision")
     if ".." in label:
         raise RevisionError("unsupported_syntax", label, "ranges are only accepted through resolve_range()")
     if _FORBIDDEN.search(label):
@@ -120,14 +120,16 @@ def oid_or_none(value: object) -> Optional[str]:
 
 # --------------------------------------------------------------------------- resolution
 
-def _classify_failure(label: str, kind: str, cwd, stderr: str) -> RevisionError:
+def _classify_failure(label: str, kind: str, cwd) -> RevisionError:
     from . import git  # late import: git.py imports this module
-    if "ambiguous" in stderr.lower():
+    # error path only: rerun without --quiet so git says WHY (ambiguous short id, ...)
+    why = git.run(["rev-parse", "--verify", "--end-of-options", f"{label}^{{{kind}}}"], cwd=cwd, timeout=10)
+    if "ambiguous" in why.stderr.lower():
         return RevisionError("ambiguous", label, f"{label!r} is ambiguous (more than one object matches)")
     base = re.split(r"[~^@]", label, maxsplit=1)[0]
     if (base == "HEAD" or label == "@") and git.head_sha(cwd) is None:
         return RevisionError("unborn", label, "HEAD is unborn: the repository has no commits yet")
-    probe = git.run(["rev-parse", "--verify", "--quiet", "--end-of-options", label], cwd=cwd, timeout=10)
+    probe = git.run(["rev-parse", "--verify", "--quiet", "--end-of-options", f"{label}^{{object}}"], cwd=cwd, timeout=10)
     if probe.ok and is_full_oid(probe.text):
         return RevisionError("wrong_object_type", label, f"{label!r} exists but is not a {kind}")
     hint = ""
@@ -156,7 +158,7 @@ def resolve(label: Union[str, Revision], cwd=None, kind: str = "commit", timeout
     check_syntax(label)
     r = git.run(["rev-parse", "--verify", "--quiet", "--end-of-options", f"{label}^{{{kind}}}"], cwd=cwd, timeout=timeout)
     if not r.ok:
-        raise _classify_failure(label, kind, cwd, r.stderr)
+        raise _classify_failure(label, kind, cwd)
     sha = r.text
     if not is_full_oid(sha):
         raise RevisionError("unexpected_output", label, "git returned something other than a full object id")

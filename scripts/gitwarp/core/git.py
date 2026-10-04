@@ -45,8 +45,8 @@ status etc.).  Patch-producing commands (diff, log, show, blame) additionally ge
 ``--no-textconv``, and callers cannot re-enable them (``--ext-diff``/``--textconv`` are refused).  Clean/smudge/
 process FILTERS are run by git itself during ``status``/``diff`` (to compare working-tree content); filters
 defined in the repository's own config (local/worktree/command scope) are therefore enumerated with
-``git config --show-scope`` and emptied with ``-c filter.<name>.clean=`` etc. for commands that read the work
-tree.  Aliases are never invoked: only builtin subcommands from the allowlist
+``git config --show-scope`` and emptied with ``-c filter.<name>.clean=`` etc. (plus ``required=false``, so git does
+not die on a filter it may no longer run) for commands that read the work tree.  Aliases are never invoked: only builtin subcommands from the allowlist
 (``ALLOWED_SUBCOMMANDS``) are accepted, and the mutating/dangerous ones are restricted to one exact form each
 (``branch <name> <sha>``, ``stash list``, ``worktree list``, ``reflog show``, read-only ``config``, ``symbolic-ref
 <name>``).  Options that write files or run programs (``--output``, ``--open-files-in-pager``/``grep -O``,
@@ -296,17 +296,29 @@ def _filter_overrides(cwd, env: dict) -> list:
     if rc not in (0, 1):
         return []
     keys, seen = [], set()
-    for rec in out.split("\x00"):
-        if scoped:
-            scope, _, rec = rec.partition("\t")
-            if scope.strip() in ("system", "global"):
-                continue
+    toks = out.split("\x00")
+    if scoped:      # --null --show-scope prints  <scope> NUL <key> NL <value> NUL
+        records = [(toks[i], toks[i + 1]) for i in range(0, len(toks) - 1, 2)]
+    else:
+        records = [("", t) for t in toks if t]
+    for scope, rec in records:
+        if scope.strip() in ("system", "global"):
+            continue
         key = rec.split("\n", 1)[0]
         if not _FILTER_KEY.match(key) or key.lower() in seen:
             continue
         seen.add(key.lower())
         keys.append(key)
-    return [x for k in keys for x in ("-c", f"{k}=")]
+    names = []
+    for k in keys:
+        name = k[len("filter."):k.rindex(".")]
+        if name not in names:
+            names.append(name)
+    out_args = []
+    for name in names:     # empty commands, and `required=false` so git does not die on a filter it may not run
+        for suffix, val in (("clean", ""), ("smudge", ""), ("process", ""), ("required", "false")):
+            out_args += ["-c", f"filter.{name}.{suffix}={val}"]
+    return out_args
 
 
 # --------------------------------------------------------------------------- process execution
