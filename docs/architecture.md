@@ -18,16 +18,19 @@ All Git access --> gitwarp/core/git.py
 
 | Package | Responsibility |
 |---|---|
-| `gitwarp.core.git` | The only module that spawns `git`: argument lists, timeouts, structured parsing, typed errors (`GitNotFound`, `GitTimeout`, `GitError`), `GIT_OPTIONAL_LOCKS=0` |
-| `gitwarp.core.{config,redact,paths,output}` | Config parsing, secret redaction, path tagging, JSON and hook-protocol output |
+| `gitwarp.core.git` | The **one** Git process boundary (the only module that spawns `git`): argv lists, timeouts, bounded output, scrubbed environment, command-level suppression of repository-configured helpers, an allowlist of subcommands, typed errors. See [git-boundary.md](git-boundary.md) |
+| `gitwarp.core.revisions` | The **one** revision-normalisation path: reject option-shaped input, resolve with `--end-of-options` to a full object id |
+| `gitwarp.core.storage` | The **one** secure-storage abstraction for `.git/git-warp` (0700/0600, no symlinks, no non-regular targets, atomic writes, quarantine) |
+| `gitwarp.core.config` | The **one** policy model: built-in floor < user policy < repository policy, tighten-only ([configuration.md](configuration.md)) |
+| `gitwarp.core.{redact,paths,output}` | Secret redaction (applied centrally to all output), path tagging, JSON and hook-protocol output |
 | `gitwarp.hooks` + `scripts/hook_*.py` | stdin hook JSON in, decision or context out; must not crash Claude Code |
-| `gitwarp.safety` | Shell tokenizer and Git command classifier (deny/ask/allow) |
+| `gitwarp.safety` | Shell tokenizer and Git command classifier: the **one** Guardian decision API, `classify_command`, returning DENY / ASK / DEFER |
 | `gitwarp.analysis` | `xray`, `pr` (plus secret and diff scanning, risk rules) |
 | `gitwarp.history` | `rescue`, `archaeology`, `bisect` |
 | `gitwarp.semantic` | `commits`, `blast`, `conflict`, `temporal`; clustering; ecosystem adapters (`python`, `js`, `generic`) |
 | `gitwarp.memory` | SQLite index (`warp.db`), flight recorder, state file, snapshot helpers for the Stop hook |
 | `skills/*/SKILL.md` | Prompts that run the CLI and define the answer format |
-| `agents/*.md` | Three read-only analyst agents |
+| `agents/*.md` | Three analyst agents with tools `Read, Grep, Glob` only: they have no shell and analyse CLI output the calling assistant passes in (Claude Code cannot scope Bash in agent frontmatter, so Bash was removed rather than described as read-only) |
 
 `scripts/warp.py` is a dispatch table mapping each command to a module exposing `main(argv)`. `scripts/hook_*.py`
 are thin entry points that add `scripts/` to `sys.path` and call `gitwarp.hooks.*.main`.
@@ -49,8 +52,8 @@ creating a new branch (ADR-8); bisect never auto-runs (ADR-9); "authorship" not 
 
 ## Hook failure behaviour
 
-- Malformed or empty stdin: no-op (no output, no side effects) for SessionStart/Stop; `{}` for the others.
-- Guard error: `ask` if the command mentions git, otherwise allow.
+- Malformed or empty stdin, or a hostile payload: a no-op (no side effects) for SessionStart/Stop/PostToolUse (PostToolUse always prints exactly `{}`); the PreToolUse guard answers **ask** for anything that could be a Bash command it cannot interpret. Stdin is read with a 1 MiB cap and each hook has a wall-clock budget inside its `hooks.json` timeout.
+- Guard error: `ask` if the command mentions git or could not be parsed, otherwise defer.
 - Stop hook never blocks and exits immediately if `stop_hook_active` is set.
 - Memory degrades gracefully: if `.git/git-warp/` is not writable or `warp.db` is unreadable, the index is rebuilt
   (the old file is kept once as `warp.db.corrupt`) or kept in memory for that run with a warning.
@@ -63,9 +66,11 @@ ecosystem for blast radius is a class in `semantic/adapters/` with `imports(path
 
 ## Tests that protect the architecture
 
-`tests/unit/test_architecture_invariants.py` contains four tests: `subprocess` is used only in `core/git.py`;
-no dangerous calls (`eval`, `exec`, `system`, `popen`, `shell=True`) in production code; every script referenced in
-`hooks/hooks.json` exists; and the obsolete scaffold scripts are gone. The cleanup log in
+`tests/unit/test_architecture_invariants.py` and `tests/unit/test_core_git_boundary.py` enforce: `subprocess` is used only in
+`core/git.py`; no dangerous calls (`eval`, `exec`, `system`, `popen`, `shell=True`) in production code; nothing outside
+`core/revisions.py` normalises revisions (no `check_ref`); every script referenced in `hooks/hooks.json` exists; and the
+obsolete scaffold scripts are gone. `tests/integration/test_plugin_surface.py` proves mechanically that every advertised
+feature has an implementation, a `warp.py` command, a skill that reaches it, and no over-broad `allowed-tools`. The cleanup log in
 [../planning/CLEANUP_LOG.md](../planning/CLEANUP_LOG.md) records the removal of the old scaffold scripts that
 violated the single-Git-layer rule.
 

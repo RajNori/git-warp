@@ -13,11 +13,29 @@ stored, what is redacted, how long it is kept, and how to turn it off or delete 
 |---|---|---|
 | `flight-recorder.jsonl` | `PostToolUse` and `SessionStart` hooks | Redacted metadata about tool calls, one JSON object per line |
 | `flight-recorder.jsonl.1` | rotation | The one previous generation, created when the file would exceed 5 MiB |
+| `warp.db.lock` | `memory` commands | Empty lock file that serialises first-time database creation and schema setup across processes |
+| `warp.db.corrupt`, `.corrupt.1`, `.corrupt.2` | corruption handling | A database that is *definitively* corrupt is moved aside (never deleted) before a fresh one is built; three generations are kept, the one beyond that is dropped |
 | `warp.db` | `memory` commands, `temporal`, `SessionStart` auto-index | SQLite index of Git history plus session rows |
 | `state.json` | recorder and hooks | Bookkeeping: last compaction time, last session id, last Stop-report hash, auto-index back-off timestamp, schema number |
 
-Observed permissions in a real run: `flight-recorder.jsonl` and `state.json` were `-rw-------` (owner only);
-`warp.db` was `-rw-r--r--` (the default for new SQLite files under your umask).
+Storage is hardened by one layer (`scripts/gitwarp/core/storage.py`) used by every writer:
+
+- The directory is created `0700` and every file `0600` (`warp.db`, its SQLite sidecars, `flight-recorder.jsonl` and
+  its rotated copy, `state.json`, temporary replacement files, quarantined databases and the lock file). A directory or
+  file left `0755`/`0644` by an earlier version is tightened on next use (modes are only ever tightened).
+- A symlink is never followed, even if its target looks writable. A FIFO, socket, device or an unexpected directory in
+  place of a state file is refused, and **nothing is deleted or replaced**: the operation is skipped (hooks stay silent
+  and exit 0; the memory index falls back to an in-memory index with a warning). Files are opened with
+  `O_NOFOLLOW|O_NONBLOCK` and checked with `fstat` on the descriptor, so a FIFO cannot hang a hook.
+- `state.json` is replaced atomically (private same-directory temporary file, flush/fsync, `os.replace`) under a lock, so
+  SessionStart and Stop do not lose each other's keys. Recorder records are appended with one `write` on an
+  `O_APPEND` descriptor under `flock`; if a crash left a partial last line, the next record starts on a fresh line.
+- The location is resolved with Git (the common Git directory), so a linked worktree, whose `.git` is a file, shares
+  one state directory with its main repository.
+- Windows has no POSIX permission bits or `flock`: the modes are best effort there (see [platforms.md](platforms.md)).
+  Residual risks: SQLite opens `warp.db` by path, so a same-account process that wins a race between the checks and
+  the open is not fully excluded (the 0700 directory limits this to the same user); the check before the final
+  `os.replace` narrows but does not eliminate a swap race.
 
 The code contains no network calls (a search for socket/HTTP/urllib imports found only `urllib.parse.quote`).
 Git Warp does not upload anything. Note that, as with any Claude Code plugin, text that a hook injects into the
@@ -54,6 +72,14 @@ text. Patterns: private-key blocks; `Authorization:`/`Proxy-Authorization:` valu
 `name: value` where the name contains `secret`, `token`, `password`/`passwd`/`pwd`, `api_key`, `access_key`,
 `private_key`, `credential` or `auth`; and flags such as `--password`, `--token`, `--secret`, `--api-key`, `--auth`.
 JSON keys with secret-like names have their string values replaced.
+
+Redaction is applied in three places: **before** commit text, author names, paths, ref names, session ids and branches are
+inserted into SQLite; to every string written to `state.json`; and **centrally on every outbound path**, i.e. all CLI JSON
+(`emit`) and all hook output, so a command cannot forget it. It also covers SSH identity-file arguments (`ssh -i KEY`,
+`--identity-file`, `IdentityFile`), `--password=VALUE`-style flags, `curl -H` `Authorization`/`Cookie` headers, npm
+`_authToken` lines, Hugging Face tokens and AWS secret keys. Database schema version 2 is a privacy migration: it empties
+the derived v1 tables and runs `VACUUM`, so raw commit text from an older version does not survive an upgrade (the next
+index run rebuilds with redaction), and `secure_delete` is on.
 
 Redaction input is capped at 8000 characters per string (anything beyond is replaced by a truncation marker, never
 passed through unredacted; added in commit `351ef9f` to keep hooks inside their timeouts).
@@ -105,12 +131,13 @@ python3 scripts/warp.py memory forget          # shows what it would delete and 
 python3 scripts/warp.py memory forget --yes    # deletes warp.db(+sidecars) and flight-recorder.jsonl(+.1)
 ```
 
-`forget` keeps `state.json`. You can also delete `.git/git-warp/` by hand. Cloning or copying the repository
+`forget` deletes regular files only (a symlink, FIFO or directory is refused, never followed) and covers `warp.db`, its
+sidecars, the lock file, quarantined copies and the recorder files. It keeps `state.json`. You can also delete `.git/git-warp/` by hand. Cloning or copying the repository
 elsewhere copies `.git/git-warp/` too unless you exclude it (for example a fresh `git clone` does not include it,
 since it is not part of Git's transferred objects).
 
 ## Honest limits
 
-- Local files are not encrypted.
+- Local files are not encrypted (they are owner-only, 0700/0600, on POSIX systems).
 - The recorder logs the redacted text of every Bash command Claude runs, not only Git commands.
 - Anyone with read access to your `.git` directory can read these files.

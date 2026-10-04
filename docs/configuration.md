@@ -1,12 +1,39 @@
 # Configuration
 
 Git Warp works with no configuration. To change behaviour, create `.claude/git-warp.local.md` in the repository
-root (the directory `git rev-parse --show-toplevel` reports). This follows the Claude Code plugin-settings
-convention of a `*.local.md` file with frontmatter. This repository's `.gitignore` already contains
+root (the directory `git rev-parse --show-toplevel` reports) and/or `~/.claude/git-warp.local.md` for all
+repositories. This follows the Claude Code plugin-settings convention of a `*.local.md` file with frontmatter. This repository's `.gitignore` already contains
 `.claude/*.local.md`; add the same line to your own project if you do not want to commit it.
 
 Behaviour verified against `scripts/gitwarp/core/config.py` and by running `warp.py` against a repository with a
 config file.
+
+## Policy sources and precedence
+
+There is one policy model, built from three sources. Trust **decreases** from left to right, and a less-trusted source
+can only **tighten**:
+
+```
+built-in safety floor   →   user policy (~/.claude/git-warp.local.md)   →   repository policy (<repo>/.claude/git-warp.local.md)
+   most trusted                                                              least trusted (can only tighten)
+```
+
+A repository is untrusted input (anyone can commit a `.claude/git-warp.local.md`), so **no source can loosen what a
+more-trusted source established**:
+
+- `protected_branches` is the **union** of the built-in defaults, the user's additions and the repository's additions.
+  Nothing can remove a default. Relaxing protection is not supported in v0.1.0.
+- `safety_mode` is the **strictest** value across sources (`strict` beats `standard`); a repository `standard` cannot
+  lower a user `strict`.
+- `memory_enabled` and `recorder_enabled` are disabled if **any** source says `false` (turning collection off is a
+  privacy tightening and is allowed from either source). `recorder_retention_days` can only be lowered by the repository.
+- The path lists (`sensitive_paths`, `ignored_paths`, `test_paths`, `infra_paths`) are unions: they add project context.
+- `guard_enabled`, `safety_mode: off`, an empty `protected_branches` and any other attempt to disable the guard are
+  **ignored with a warning** (prefixed with the source). The unconditional rules (`reset --hard`, forced `clean`,
+  forced push or forced fetch into a protected ref, ...) cannot be configured away.
+- Policy files are read defensively: only regular files of at most 64 KiB, opened without following symlinks; a
+  symlink, FIFO, socket, directory, binary, oversized or malformed file is ignored with a warning. Lists are capped
+  at 200 items of 256 characters. (A symlinked *parent directory* such as `.claude` is not rejected: only the final file is checked.)
 
 ## File format
 
@@ -28,8 +55,8 @@ Warnings appear in the `warnings` of commands that load the config (for example 
 
 | Key | Type | Default | Validation | Effect |
 |---|---|---|---|---|
-| `protected_branches` | list of strings | `main`, `master`, `develop`, `development`, `production`, `prod`, `release` | list of strings; an empty list is rejected (warning, default kept) | Branch globs (`fnmatch`) the guard treats as protected |
-| `safety_mode` | string | `standard` | `standard` or `strict` | `strict` turns history-rewriting `ask` verdicts into `deny` |
+| `protected_branches` | list of strings | `main`, `master`, `develop`, `development`, `production`, `prod`, `release` | list of strings; an empty list is ignored (warning). Entries are **added** to the defaults | Branch globs (`fnmatch`) the guard treats as protected |
+| `safety_mode` | string | `standard` | `standard` or `strict`; the strictest source wins | `strict` turns history-rewriting `ask` verdicts into `deny` |
 | `sensitive_paths` | list of strings | `[]` | list of strings | Extra globs that receive the `sensitive` tag |
 | `ignored_paths` | list of strings | `[]` | list of strings | Extra globs tagged `generated` (excluded from analyses that skip generated files) |
 | `test_paths` | list of strings | `[]` | list of strings | Extra globs tagged `test` |
@@ -82,12 +109,13 @@ With that file, in a real run:
 
 ## Overriding on the command line
 
-Only the guard has overrides: `warp.py guard check "<cmd>" --mode strict --protected "main,release/*"`.
-There are no environment variables for configuration.
+Only the guard has overrides: `warp.py guard check "<cmd>" --mode strict --protected "main,release/*"`. They follow
+the same rule: `--protected` **adds** branches and `--mode` can only raise strictness.
+The only environment input is `HOME`, which locates the user policy file.
 
 ## Disabling things
 
 - Stop recording: `recorder_enabled: false` (or `recorder_retention_days: 0`). Existing records stay until they age
   out or you run `memory forget --yes`.
 - Stop indexing: `memory_enabled: false`. An existing `warp.db` stays until you delete it.
-- The guard has no off switch in config. Remove or disable the plugin to stop it.
+- The guard has no off switch in config (any attempt is ignored with a warning). Remove or disable the plugin to stop it.
