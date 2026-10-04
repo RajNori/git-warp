@@ -11,8 +11,11 @@ import sys
 
 from ..core import git
 from ..core.config import load_config
-from ..core.output import read_hook_event, write_hook
-from ..memory import recorder, snapshot, state
+from ..memory import snapshot, state
+from ._runtime import HookDeadline, cwd_of, deadline, emit, read_event
+
+BUDGET_S = 16.0      # hooks.json allows 20 s
+MAX_REPORT_CHARS = 3000
 
 
 def build_report(cwd, cfg, st: dict) -> str:
@@ -39,34 +42,41 @@ def build_report(cwd, cfg, st: dict) -> str:
 
 def main() -> int:
     try:
-        event = read_hook_event()
-        if not event:  # malformed/empty stdin: no side effects, no output
-            return 0
-        if event.get("stop_hook_active"):
-            return 0
-        cwd = event.get("cwd") if isinstance(event.get("cwd"), str) and event.get("cwd") else os.getcwd()
-        root = git.repo_root(cwd)
-        if root is None:
-            return 0
-        cfg = load_config(root)
-        sdir = git.state_dir(cwd)
-        st = snapshot.status(cwd, timeout=8.0, untracked="all")
-        if st is None:
-            return 0
-        prior = state.read(sdir)
-        if st["total"] == 0:
-            if prior.get("last_report_hash"):
-                state.update(sdir, last_report_hash="")
-            return 0
-        report = build_report(cwd, cfg, st)
-        digest = hashlib.sha256(f"{root}\n{report}".encode("utf-8", "replace")).hexdigest()[:16]
-        if prior.get("last_report_hash") == digest:
-            return 0
-        state.update(sdir, last_report_hash=digest)
-        write_hook({"systemMessage": report})
-    except Exception:
+        with deadline(BUDGET_S):
+            _run()
+    except (Exception, HookDeadline):
         pass
     return 0
+
+
+def _run() -> None:
+    event = read_event()
+    if not event:  # malformed/empty/oversized stdin: no side effects, no output
+        return
+    if event.get("stop_hook_active"):  # truthy in any form: never act again (loop guard)
+        return
+    cwd = cwd_of(event) or os.getcwd()
+    root = git.repo_root(cwd)
+    if root is None:
+        return
+    cfg = load_config(root)
+    sdir = git.state_dir(cwd)
+    st = snapshot.status(cwd, timeout=8.0, untracked="all")
+    if st is None:
+        return
+    prior = state.read(sdir)
+    if st["total"] == 0:
+        if prior.get("last_report_hash"):
+            state.update(sdir, last_report_hash="")
+        return
+    report = build_report(cwd, cfg, st)
+    if len(report) > MAX_REPORT_CHARS:
+        report = report[:MAX_REPORT_CHARS - 1] + "\u2026"
+    digest = hashlib.sha256(f"{root}\n{report}".encode("utf-8", "replace")).hexdigest()[:16]
+    if prior.get("last_report_hash") == digest:
+        return
+    state.update(sdir, last_report_hash=digest)
+    emit({"systemMessage": report})
 
 
 if __name__ == "__main__":  # pragma: no cover
