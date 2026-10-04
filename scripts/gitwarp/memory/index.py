@@ -114,7 +114,20 @@ def open_db(cwd) -> WarpConnection:
     except OSError as e:
         return _memory_db(str(cwd), [f"state storage refused or not writable ({e}); index kept in memory for this run only"])
     key = str(path)
-    for attempt in (1, 2):
+    with storage.file_lock(path.parent, DB_NAME):    # serialises first creation / schema init / quarantine across processes
+        return _open_locked(cwd, path, key, warnings)
+
+
+def _is_corruption(e: Exception) -> bool:
+    """Definitive corruption only: never empty-new, locked/busy or mid-initialisation states."""
+    if isinstance(e, schema.IncompatibleSchema):
+        return True
+    m = str(e).lower()
+    return any(t in m for t in ("malformed", "not a database", "corrupt", "disk image", "encrypted", "no such table", "no such column"))
+
+
+def _open_locked(cwd, path, key, warnings) -> WarpConnection:
+    for attempt in (1, 2, 3):
         conn = None
         try:
             conn = _connect(key)
@@ -128,7 +141,12 @@ def open_db(cwd) -> WarpConnection:
                 conn.close()
             if isinstance(e, sqlite3.OperationalError) and _is_unwritable(e):
                 return _memory_db(key, warnings + [f"warp.db is read-only or locked ({e}); index kept in memory for this run only"])
-            if attempt == 2:
+            if not _is_corruption(e):
+                if attempt < 3:
+                    time.sleep(0.05 * attempt)     # transient (busy / initialising by another process): bounded retry, no quarantine
+                    continue
+                return _memory_db(key, warnings + [f"warp.db busy ({e}); index kept in memory for this run only"])
+            if attempt >= 2:
                 return _memory_db(key, warnings + [f"warp.db unusable ({e}); index kept in memory for this run only"])
             moved = _quarantine(path)
             if moved is None:
@@ -378,17 +396,24 @@ def ensure_indexed(cwd, max_commits: Optional[int] = None, *, time_budget: Optio
                 res["warnings"].extend(conn.warnings)
                 res["persisted"], res["db"] = False, None
                 _run(conn, cwd, head, max_commits, True, shallow, deadline, res)
+            elif not _is_corruption(e):
+                res["warnings"].append(f"warp.db changed under us ({e}); using existing index state")
+                res["mode"] = "skipped"
             else:
                 conn.close()
                 conn = _quarantine_and_reopen(cwd)
                 res["warnings"].extend(conn.warnings)
                 _run(conn, cwd, head, max_commits, True, shallow, deadline, res)
         except sqlite3.DatabaseError as e:
-            conn.close()
-            conn = _quarantine_and_reopen(cwd)
-            res["warnings"].extend(conn.warnings)
-            res["warnings"].append(f"index database error: {e}")
-            _run(conn, cwd, head, max_commits, True, shallow, deadline, res)
+            if not _is_corruption(e):
+                res["warnings"].append(f"index database error ({e}); using existing index state")
+                res["mode"] = "skipped"
+            else:
+                conn.close()
+                conn = _quarantine_and_reopen(cwd)
+                res["warnings"].extend(conn.warnings)
+                res["warnings"].append(f"index database error: {e}")
+                _run(conn, cwd, head, max_commits, True, shallow, deadline, res)
         res["total_commits"] = conn.execute("SELECT COUNT(*) FROM commits").fetchone()[0]
         st = _state(conn)
         res["complete"] = st.get("complete") == "1"

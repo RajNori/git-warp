@@ -322,7 +322,7 @@ def _lock(fd: int, timeout: float = 2.0) -> bool:
 def _open_locked_append(d: _Dir, name: str) -> int:
     """O_APPEND fd holding an exclusive lock on the file currently at ``name`` (retries across rotation)."""
     for _ in range(5):
-        fd = _open_file(d, name, os.O_WRONLY | os.O_APPEND, create=True)
+        fd = _open_file(d, name, os.O_RDWR | os.O_APPEND, create=True)
         if fcntl is None:
             return fd
         try:
@@ -333,7 +333,7 @@ def _open_locked_append(d: _Dir, name: str) -> int:
         except OSError:
             pass
         os.close(fd)
-    return _open_file(d, name, os.O_WRONLY | os.O_APPEND, create=True)
+    return _open_file(d, name, os.O_RDWR | os.O_APPEND, create=True)
 
 
 def append_line(directory, name: str, line: bytes, max_bytes: int, rotate_suffix: str = ".1") -> None:
@@ -352,6 +352,9 @@ def append_line(directory, name: str, line: bytes, max_bytes: int, rotate_suffix
                     os.replace(str(d.path / name), str(d.path / old))
                 os.close(fd)
                 fd = _open_locked_append(d, name)
+            size = os.fstat(fd).st_size
+            if size and os.pread(fd, 1, size - 1) != b"\n":
+                line = b"\n" + line      # a crash left a torn last line: keep the fragment isolated, keep this record whole
             n = os.write(fd, line)
             if n != len(line):  # pragma: no cover - O_APPEND on a regular file writes whole
                 raise OSError("short write")
@@ -398,6 +401,25 @@ def update_locked(directory, name: str, fn: Callable[[Optional[bytes]], bytes]) 
             write_atomic(directory, name, fn(cur))
         finally:
             os.close(lfd)
+
+
+class file_lock:
+    """Exclusive advisory lock on ``<name>.lock`` in the state directory (bounded wait; proceeds unlocked on timeout)."""
+
+    def __init__(self, directory, name: str, timeout: float = 30.0):
+        self.directory, self.name, self.timeout, self.fd = directory, name + ".lock", timeout, None
+
+    def __enter__(self):
+        with _Dir(self.directory, create=True) as d:
+            self.fd = _open_file(d, self.name, os.O_WRONLY, create=True)
+        if not _lock(self.fd, self.timeout):
+            pass                                         # callers must still tolerate concurrency; the lock only narrows it
+        return self
+
+    def __exit__(self, *exc):
+        if self.fd is not None:
+            os.close(self.fd)            # releases the flock
+        return False
 
 
 def unlink_regular(directory, name: str) -> bool:
