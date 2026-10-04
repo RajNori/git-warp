@@ -381,6 +381,7 @@ def memory_hints(ctx: _Ctx, files: dict, findings: list, sources: dict) -> None:
 
 # ------------------------------------------------------------------------------------------ entry point
 
+MAX_UNTRACKED_FILES = 500     # untracked files read and probed; beyond this the result is flagged partial
 _ORDER = {"reintroduced-removed-code": 0, "removed-fix-code": 1, "dependency-previously-removed": 2, "touched-file-has-reverts": 3, "file-history-signals": 4}
 _QUAL = {"exact-line": 0, "identifier": 1, "heuristic": 2}
 
@@ -419,12 +420,18 @@ def analyze(root: Path, base: Optional[str] = None, limit: int = 20, budget: int
         warnings.append("could not compute the diff: " + r.stderr.strip()[:150])
     if not base:
         try:
+            seen_untracked = 0
             for s in git.working_tree_status(root, untracked="all"):
                 if s.untracked and s.path not in files:
+                    seen_untracked += 1
+                    if seen_untracked > MAX_UNTRACKED_FILES:
+                        continue
                     t = read_text(root / s.path, 300_000)
                     if t:
                         files[s.path] = {"added": [(i, ln) for i, ln in enumerate(t.split("\n")[:1500], 1)], "removed": [], "old_ranges": [],
                                          "new_file": True, "deleted": False}
+            if seen_untracked > MAX_UNTRACKED_FILES:
+                warnings.append(f"{seen_untracked} untracked files: only the first {MAX_UNTRACKED_FILES} were analysed (partial result for untracked files)")
         except git.GitError:
             pass
     from ..core.paths import classify_path
