@@ -15,15 +15,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from ..core import git
+from ..core import git, storage
 from ..core.config import load_config
 from ..core.redact import redact, redact_obj
 from . import state
-
-try:  # POSIX advisory locking; absent on Windows (we then rely on O_APPEND alone)
-    import fcntl
-except ImportError:  # pragma: no cover
-    fcntl = None
 
 RECORDER_FILE = "flight-recorder.jsonl"
 MAX_BYTES = 5 * 1024 * 1024
@@ -65,7 +60,7 @@ def repo_context(cwd) -> Optional[dict]:
         h = git.run(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=cwd, timeout=5)
     except git.GitError:
         return None
-    return {"root": root, "state_dir": Path(common) / "git-warp", "branch": b.text if b.ok and b.text else None,
+    return {"root": root, "state_dir": storage.state_dir(Path(common)), "branch": b.text if b.ok and b.text else None,
             "head": h.text[:12] if h.ok and h.text else None}
 
 
@@ -120,37 +115,10 @@ def build_record(event: dict, ctx: dict, cwd) -> dict:
     return redact_obj(rec, max_str=COMMAND_MAX + 8)
 
 
-# --------------------------------------------------------------------------- file I/O
+# --------------------------------------------------------------------------- file I/O (all via core/storage)
 
-def _open_locked(path: Path):
-    """Open for append and take an exclusive lock on the *current* file (retry if it was rotated meanwhile)."""
-    for _ in range(4):
-        fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-        if fcntl is None:
-            return fd
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            if os.fstat(fd).st_ino == os.stat(str(path)).st_ino:
-                return fd
-        except OSError:
-            pass
-        os.close(fd)
-    return os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-
-
-def _append(path: Path, line: bytes) -> None:
-    fd = _open_locked(path)
-    try:
-        if os.fstat(fd).st_size + len(line) > MAX_BYTES:
-            os.replace(str(path), str(path) + ".1")  # rotate: keep exactly one previous generation
-            os.close(fd)
-            fd = _open_locked(path)
-        os.write(fd, line)  # single write on an O_APPEND fd
-    finally:
-        try:
-            os.close(fd)  # releases flock
-        except OSError:
-            pass
+def _append(sdir: Path, line: bytes) -> None:
+    storage.append_line(sdir, RECORDER_FILE, line, MAX_BYTES)   # rotation keeps exactly one previous generation
 
 
 def _parse_ts(s) -> Optional[datetime]:
@@ -162,13 +130,11 @@ def _parse_ts(s) -> Optional[datetime]:
 
 def compact(sdir: Path, retention_days: int, now: Optional[datetime] = None) -> int:
     """Drop records older than the retention window (and unparseable lines).  Returns lines removed."""
-    path = sdir / RECORDER_FILE
     cutoff = (now or _now()) - timedelta(days=retention_days)
     removed = 0
-    fd = _open_locked(path)
-    try:
-        with open(path, "rb") as fh:
-            data = fh.read()
+
+    def keep_recent(data: bytes):
+        nonlocal removed
         keep = []
         for ln in data.splitlines():
             try:
@@ -179,16 +145,13 @@ def compact(sdir: Path, retention_days: int, now: Optional[datetime] = None) -> 
                 keep.append(ln)
             else:
                 removed += 1
-        if removed:
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_bytes(b"".join(k + b"\n" for k in keep))
-            os.replace(str(tmp), str(path))
-    finally:
-        os.close(fd)
-    old = Path(str(path) + ".1")
+        return b"".join(k + b"\n" for k in keep) if removed else None
+
+    storage.rewrite_locked(sdir, RECORDER_FILE, keep_recent)
+    rotated = RECORDER_FILE + ".1"
     try:
-        if old.exists() and datetime.fromtimestamp(old.stat().st_mtime, timezone.utc) < cutoff:
-            old.unlink()
+        if datetime.fromtimestamp(os.stat(Path(sdir) / rotated, follow_symlinks=False).st_mtime, timezone.utc) < cutoff:
+            storage.unlink_regular(sdir, rotated)   # retention policy; refuses non-regular objects
     except OSError:
         pass
     return removed
@@ -217,10 +180,9 @@ def record(cwd, event: dict) -> bool:
         if not cfg.recorder_enabled or cfg.recorder_retention_days <= 0:
             return False
         sdir: Path = ctx["state_dir"]
-        sdir.mkdir(parents=True, exist_ok=True)
         rec = build_record(event, ctx, cwd)
         line = (json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-        _append(sdir / RECORDER_FILE, line)
+        _append(sdir, line)
         sid = rec.get("session_id")
         if sid:
             st = state.read(sdir)
@@ -236,10 +198,10 @@ def _read_lines(sdir: Path) -> list:
     out = []
     for name in (RECORDER_FILE + ".1", RECORDER_FILE):
         try:
-            data = (sdir / name).read_bytes()
+            data = storage.read_bytes(sdir, name)
         except OSError:
             continue
-        for ln in data.splitlines():
+        for ln in (data or b"").splitlines():
             try:
                 obj = json.loads(ln)
             except ValueError:
@@ -309,8 +271,12 @@ def stats(cwd) -> dict:
     except git.GitError:
         return {"exists": False}
     p = sdir / RECORDER_FILE
-    if not p.exists():
-        return {"exists": False, "path": str(p)}
+    try:
+        if storage.regular_file(sdir, RECORDER_FILE) is None:
+            return {"exists": False, "path": str(p)}
+        size = os.stat(p, follow_symlinks=False).st_size
+    except OSError as e:
+        return {"exists": False, "path": str(p), "warning": f"flight recorder unavailable: {e}"}
     recs = _read_lines(sdir)
-    return {"exists": True, "path": str(p), "size_bytes": p.stat().st_size, "records": len(recs),
+    return {"exists": True, "path": str(p), "size_bytes": size, "records": len(recs),
             "oldest": recs[0].get("ts") if recs else None, "newest": recs[-1].get("ts") if recs else None}

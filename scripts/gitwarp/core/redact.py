@@ -38,6 +38,10 @@ _EXTRA = [
     # redis-cli -a x / openssl enc -k x / -pass x
     (re.compile(r"(?i)\b(redis-cli|openssl)\b([^\n|;&]{0,200}?\s)(-a|-k|-pass|-passin|-passout)(\s+|=)(\"[^\"]*\"|'[^']*'|\S+)"),
      lambda m: m.group(1) + m.group(2) + m.group(3) + m.group(4) + REDACTED),
+    # ssh/scp/sftp/rsync identity file: the key path can itself name a secret (-i PATH, -oIdentityFile=PATH)
+    (re.compile(r"(?i)\b(ssh|scp|sftp|rsync|ssh-add)\b([^\n|;&]{0,200}?\s)(-i|--identity-file)(\s+|=)(\"[^\"]*\"|'[^']*'|\S+)"),
+     lambda m: m.group(1) + m.group(2) + m.group(3) + m.group(4) + REDACTED),
+    (re.compile(r"(?i)\b(IdentityFile)(\s*=\s*|\s+)(\"[^\"]*\"|'[^']*'|[^\s'\"]+)"), lambda m: m.group(1) + m.group(2) + REDACTED),
     # Cookie: / Set-Cookie: header values (to end of the quoted string / line)
     (re.compile(r"(?i)\b(set-cookie|cookie)(\s*[:=]\s*)[^\r\n'\"]+"), lambda m: m.group(1) + m.group(2) + REDACTED),
     # "aws_secret_access_key VALUE", "password VALUE"
@@ -81,3 +85,38 @@ def redact_obj(obj, max_str: int = 500):
 
 def _secret_key(k: str) -> bool:
     return bool(re.search(r"(?i)secret|token|passw|api[_-]?key|credential|authorization|private[_-]?key", k))
+
+
+def redact_long(text: str) -> str:
+    """Redact text of any length without dropping content (unlike :func:`redact`): split at line breaks into bounded chunks."""
+    if len(text) <= MAX_REDACT_CHARS:
+        return redact(text)
+    out, buf, size = [], [], 0
+    for line in text.splitlines(keepends=True):
+        while len(line) > MAX_REDACT_CHARS:           # a single enormous line: cut at the bound (secrets are far shorter)
+            if buf:
+                out.append(redact("".join(buf)))
+                buf, size = [], 0
+            out.append(redact(line[:MAX_REDACT_CHARS]))
+            line = line[MAX_REDACT_CHARS:]
+        if size + len(line) > MAX_REDACT_CHARS and buf:
+            out.append(redact("".join(buf)))
+            buf, size = [], 0
+        buf.append(line)
+        size += len(line)
+    if buf:
+        out.append(redact("".join(buf)))
+    return "".join(out)
+
+
+def scrub(obj):
+    """Deep-copy JSON-like data redacting every string value (keys, numbers and structure untouched, nothing truncated)."""
+    if isinstance(obj, str):
+        return redact_long(obj)
+    if isinstance(obj, dict):
+        return {(k if isinstance(k, str) else str(k)): scrub(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [scrub(v) for v in obj]
+    if obj is None or isinstance(obj, (bool, int, float)):
+        return obj
+    return redact_long(str(obj))                      # what json.dumps(default=str) would have printed

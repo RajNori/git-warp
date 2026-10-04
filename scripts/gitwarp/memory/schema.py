@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class IncompatibleSchema(Exception):
@@ -41,7 +41,10 @@ _V1 = [
 ]
 
 # version -> statements that upgrade (version-1) -> version.  Add future migrations here.
-MIGRATIONS = {1: _V1}
+# v2 (privacy): v1 stored raw commit text.  Everything in the index is derived from Git, so the upgrade empties it (the next
+# run rebuilds with redaction applied) and VACUUMs so no old text survives in free pages.  sessions/events hold no commit text.
+_V2 = [f"DELETE FROM {t}" for t in ("cochanges", "commit_files", "commits", "files", "authors", "refs", "index_state")]
+MIGRATIONS = {1: _V1, 2: _V2}
 
 
 def migrate(conn: sqlite3.Connection) -> int:
@@ -66,4 +69,9 @@ def migrate(conn: sqlite3.Connection) -> int:
     except Exception:
         conn.execute("ROLLBACK")
         raise
+    if cur >= 1:
+        try:
+            conn.execute("VACUUM")
+        except sqlite3.Error:
+            pass
     return SCHEMA_VERSION
