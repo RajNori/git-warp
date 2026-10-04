@@ -77,6 +77,16 @@ WHY
 - MEDIUM: branch diverged from upstream: 3 ahead, 2 behind
 ```
 
+## Guardian: checking a command without running it
+
+When the user asks whether a Git command would be allowed (or why the Git Warp guard blocked one), classify the text with the guard instead of running it. This only prints a verdict and never executes the command:
+
+```
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/warp.py" guard check "<git command text>" --repo "$PWD"
+```
+
+Report the `decision` (`allow`, `ask` or `deny`), the reason and any safer alternative it lists. The live guard is a PreToolUse hook; this command is the same classifier, offered as a dry run.
+
 ## Rules
 
 - Report only what the JSON or your own reads show. No generic advice ("consider best practices") and no invented numbers; risk is LOW/MEDIUM/HIGH only.
