@@ -471,7 +471,7 @@ Notes for the plugin directory review, covering what the automated scan flags:
 - **No credentials read.** It reads no tokens, API keys, passwords, credential helpers or `.netrc`. Before every `git`
   call, the environment is scrubbed: all `GIT_*` variables and other risky variables are dropped.
 - **Shell patterns are detection rules, not commands it runs.** The guard classifies Bash commands before Claude runs
-  them. Text such as `bash -c`, `eval`, `<( )`, `python3 -c` and piping downloads into a shell appears in its rules,
+  them. Text such as `bash -c`, `eval`, `<( )`, `python3 -c` and download-and-run patterns appear in its rules,
   docstrings and this README because those are the patterns it inspects, asks about or blocks. None of it is executed.
 - **Hooks** run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hook_*.py"`: literal paths inside the plugin, standard library
   only, with no package installs, `npx` or `uvx`.

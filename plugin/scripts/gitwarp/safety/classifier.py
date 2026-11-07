@@ -783,13 +783,38 @@ def _gc_config(cfgs: List[str], ctx: _Ctx) -> None:
             ctx.add("gc-prune-now" if m.group(1).lower() == "prune" else "reflog-destroy")
 
 
-_EXEC_CONFIG = re.compile(r"^(core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|alternaterefscommand)|pager\..+|"
-                          r"diff\.(external|[^.]+\.(textconv|command))|credential(\..+)?\.helper|sequence\.editor|gpg(\..+)?\.program|"
-                          r"gpg\.ssh\.defaultkeycommand|merge\..+\.(driver|name)|filter\..+\.(clean|smudge|process)|uploadpack\.packobjectshook|"
-                          r"remote\..+\.(uploadpack|receivepack|vcs|proxy)|sendemail\..+|difftool\..+\.cmd|mergetool\..+\.(cmd|path)|"
-                          r"browser\..+\.cmd|man\..+\.cmd|man\.viewer|instaweb\.(browser|httpd)|web\.browser|help\.browser|http\.sslcommand|"
-                          r"gc\.recentobjectshook|guitool\..+\.cmd|imap\.tunnel|init\.templatedir|interactive\.difffilter|"
-                          r"trailer\..+\.(command|cmd)|receive\.procreceiverefs|core\.hookspath)$", re.I)
+_EXEC_CONFIG_PARTS = (
+    r"core\.(pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|alternaterefscommand)",
+    r"pager\..+",
+    r"diff\.(external|[^.]+\.(textconv|command))",
+    r"credential(\..+)?\.helper",
+    r"sequence\.editor",
+    r"gpg(\..+)?\.program",
+    r"gpg\.ssh\.defaultkeycommand",
+    r"merge\..+\.(driver|name)",
+    r"filter\..+\.(clean|smudge|process)",
+    r"uploadpack\.packobjectshook",
+    r"remote\..+\.(uploadpack|receivepack|vcs|proxy)",
+    r"sendemail\..+",
+    r"difftool\..+\.cmd",
+    r"mergetool\..+\.(cmd|path)",
+    r"browser\..+\.cmd",
+    r"man\..+\.cmd",
+    r"man\.viewer",
+    r"instaweb\.(browser|httpd)",
+    r"web\.browser",
+    r"help\.browser",
+    r"http\.sslcommand",
+    r"gc\.recentobjectshook",
+    r"guitool\..+\.cmd",
+    r"imap\.tunnel",
+    r"init\.templatedir",
+    r"interactive\.difffilter",
+    r"trailer\..+\.(command|cmd)",
+    r"receive\.procreceiverefs",
+    r"core\.hookspath",
+)
+_EXEC_CONFIG = re.compile(r"^(" + "|".join(_EXEC_CONFIG_PARTS) + r")$", re.I)
 _SAFE_PAGERS = frozenset({"", "cat", "less", "more", "less -FRX", "less -R", "false", "true"})
 ALWAYS_EXEC_SUBS = frozenset("""web--browse difftool mergetool instaweb daemon http-backend http-fetch http-push credential credential-cache
 credential-gcloud credential-netrc credential-osxkeychain credential-store send-email imap-send gui gitk citool remote-ext
@@ -1325,7 +1350,7 @@ def _h_submodule(rest, ctx, cands):
 # Commands a Git runner (`bisect run`, `submodule foreach`) may execute without asking: ONLY tools with no file-system side
 # effects.  Each is justified: echo/printf/true/false/:/test/[/[[ print or exit; cat/head/tail/ls/pwd/wc/stat/file/diff/cmp/grep
 # (and egrep/fgrep) only read; date/sleep/basename/dirname/which/type compute text.  Deliberately EXCLUDED because they write,
-# execute or fetch: cp mv rm touch tee sed (-i) awk (system) dd install ln chmod chown mkdir rmdir curl wget make scripts sh/bash
+# execute or fetch: cp mv rm touch tee sed (-i) awk (system) dd install ln chmod chown mkdir rmdir make scripts, plus network and shell-launching programs
 # sort (-o) uniq (second operand is an output file) find (-delete/-exec) xargs env nohup ...  `git` is allowed only in read-only forms.
 RUNNER_SAFE = frozenset("""echo printf true false : test [ [[ cat head tail ls pwd wc stat file diff cmp grep egrep fgrep date sleep
 basename dirname which type""".split())
